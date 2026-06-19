@@ -15,13 +15,13 @@ authors = ["Query Farm LLC <hello@query.farm>"]
 # single arrow/vgi-rpc resolves.
 vgi = "0.5.0"
 vgi-rpc = { version = "0.2.0", default-features = false, features = ["macros", "http"] }
-arrow = { version = "58", default-features = false, features = ["ipc"] }
-arrow-array = "58"
-arrow-buffer = "58"
-arrow-data = "58"
-arrow-schema = "58"
-arrow-select = "58"
-arrow-cast = "58"
+arrow = { version = "59", default-features = false, features = ["ipc"] }
+arrow-array = "59"
+arrow-buffer = "59"
+arrow-data = "59"
+arrow-schema = "59"
+arrow-select = "59"
+arrow-cast = "59"
 
 fixedformat-core = { path = "crates/fixedformat-core" }
 
