@@ -21,11 +21,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The worker depends on the VGI Rust SDK via a path dependency
-      # (`../vgi-rust/vgi`), so every cargo command needs it present as a sibling.
-      - name: Clone vgi-rust SDK (path dependency)
-        run: git clone --depth 1 https://github.com/Query-farm/vgi-rust.git "${{ github.workspace }}/../vgi-rust"
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -47,9 +42,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Clone vgi-rust SDK (path dependency)
-        run: git clone --depth 1 https://github.com/Query-farm/vgi-rust.git "${{ github.workspace }}/../vgi-rust"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

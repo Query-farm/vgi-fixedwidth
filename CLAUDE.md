@@ -9,8 +9,9 @@ talks to over Apache Arrow IPC, `ATTACH 'fixed' (TYPE vgi, LOCATION '…')`) tha
 brings Perl-`unpack` / Python-`struct` / COBOL-copybook fixed-width parsing and
 formatting to SQL. Functions live under catalog `fixed`, schema `main`.
 
-Built on the local VGI Rust SDK at `../vgi-rust/vgi` (path dep), arrow 58.
-Modeled on `../vgi-miint`.
+Built on the published VGI Rust SDK (`vgi = "0.5.0"` from crates.io), arrow 58.
+Modeled on `../vgi-miint`. The repo builds standalone — no local SDK checkout
+needed.
 
 ## SQL surface
 

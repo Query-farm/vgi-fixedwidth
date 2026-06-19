@@ -10,10 +10,10 @@ license = "MIT"
 authors = ["Query Farm LLC <hello@query.farm>"]
 
 [workspace.dependencies]
-# VGI Rust SDK (worker side). Path dependency on the local checkout; it pulls in
-# vgi-rpc 0.2 and arrow 58 transitively. Keep arrow/vgi-rpc versions in lockstep
-# with vgi-rust's workspace pins so a single arrow/vgi-rpc resolves.
-vgi = { path = "../vgi-rust/vgi" }
+# VGI Rust SDK (worker side), published on crates.io. Pulls in vgi-rpc 0.2 and
+# arrow 58 transitively; keep arrow/vgi-rpc here in lockstep with vgi's pins so a
+# single arrow/vgi-rpc resolves.
+vgi = "0.5.0"
 vgi-rpc = { version = "0.2.0", default-features = false, features = ["macros", "http"] }
 arrow = { version = "58", default-features = false, features = ["ipc"] }
 arrow-array = "58"
