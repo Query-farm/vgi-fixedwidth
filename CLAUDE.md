@@ -61,12 +61,17 @@ floats → `REAL`/`DOUBLE`, text/hex → `VARCHAR`, `?` → `BOOLEAN`. Encodings
 ## Build & test
 
 ```sh
-cargo test -p fixedformat-core   # fast codec/parser unit tests (63)
+cargo test -p fixedformat-core   # 63 unit tests + proptest round-trip fuzzing (tests/roundtrip.rs)
 cargo clippy --all-targets       # keep clean
 cargo build --release            # build the worker
-./run_tests.sh                   # end-to-end SQLLogic suite (see below)
+./run_tests.sh                   # end-to-end SQLLogic suite (9 files, see below)
 ./run_tests.sh test/sql/types.test   # single file (Catch2 filter; trailing * only)
 ```
+
+Test fixtures under `data/` are regenerated deterministically by
+`python3 data/generate_fixtures.py` (includes malformed fixtures for
+`malformed.test`). `read_fixed` decodes eagerly and fails fast on any malformed
+record (no partial rows).
 
 End-to-end tests need the haybarn tooling (one-time):
 ```sh

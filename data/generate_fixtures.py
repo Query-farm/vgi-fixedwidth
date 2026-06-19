@@ -54,4 +54,31 @@ write("rdw.dat", rdw)
 write("acct1.dat", b"AA        00001\n")
 write("acct2.dat", b"BB        00002\nCC        00003\n")
 
+
+def rdw(rec: bytes) -> bytes:
+    ln = len(rec) + 4
+    return bytes([ln >> 8, ln & 0xFF, 0, 0]) + rec
+
+
+def block(recs) -> bytes:
+    body = b"".join(rdw(r) for r in recs)
+    ln = len(body) + 4
+    return bytes([ln >> 8, ln & 0xFF, 0, 0]) + body  # BDW + RDW records
+
+
+# RDW *blocked* framing: two BDW blocks, each holding RDW-framed records.
+write("rdw_blocked.dat", block([b"AAA", b"BBB"]) + block([b"CCC"]))
+
+# --- malformed fixtures (for test/sql/malformed.test) ---
+
+# Fixed-length name X(3) + COMP-3 S9(3) (3 digits -> 2 bytes). Second record's
+# packed field has an invalid digit nibble (0xA where a 0-9 digit is required).
+write("bad_comp3.dat", b"ABC" + bytes([0x12, 0x3C]) + b"XYZ" + bytes([0xA0, 0x0C]))
+
+# Newline file whose second line is too short for a name:A10 qty:9(5) layout.
+write("short_line.dat", b"JOHN      00042\nSHORT\n")
+
+# Fixed-length stream whose length is not a multiple of the record length (5).
+write("ragged_fb.dat", b"AAA00BB")
+
 print("done")

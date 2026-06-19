@@ -44,6 +44,15 @@ AAA
 BBB
 CCC
 
+# RDW *blocked* framing (BDW blocks of RDW records, across two blocks).
+query T
+SELECT s FROM fixed.main.read_fixed('data/rdw_blocked.dat', 's:A3', framing => 'rdw_blocked')
+ORDER BY s;
+----
+AAA
+BBB
+CCC
+
 # Glob expands to multiple files (acct1.dat + acct2.dat).
 query II
 SELECT count(*), sum(qty)
@@ -109,6 +118,17 @@ SELECT * FROM fixed.main.write_fixed((FROM r3), 'data/_rdw.dat', 's:A3', framing
 
 query T
 SELECT s FROM fixed.main.read_fixed('data/_rdw.dat', 's:A3', framing => 'rdw') ORDER BY s;
+----
+AAA
+BBB
+CCC
+
+# write_fixed with RDW-blocked framing round-trips through a blocked reader.
+statement ok
+SELECT * FROM fixed.main.write_fixed((FROM r3), 'data/_rdwb.dat', 's:A3', framing => 'rdw_blocked');
+
+query T
+SELECT s FROM fixed.main.read_fixed('data/_rdwb.dat', 's:A3', framing => 'rdw_blocked') ORDER BY s;
 ----
 AAA
 BBB

@@ -245,6 +245,9 @@ SELECT * FROM write_fixed(
   setting it.
 - `pack_fixed`/`write_fixed` error if a value doesn't fit its field width — that's
   intentional (silent truncation corrupts fixed-width files).
+- `read_fixed` decodes eagerly and **fails fast**: one malformed record (bad
+  COMP-3 nibble, a too-short line, a ragged fixed-length stream) errors the whole
+  query with a clear message rather than returning partial or corrupt rows.
 - After rebuilding the worker, `DETACH fixed; ATTACH …` to pick up the new binary.
 
 ---
@@ -252,11 +255,17 @@ SELECT * FROM write_fixed(
 ## Development
 
 ```sh
-cargo test -p fixedformat-core   # fast unit tests (codecs & parsers)
+cargo test -p fixedformat-core   # unit tests + property-based round-trip fuzzing
 cargo clippy --all-targets
 ./run_tests.sh                   # end-to-end SQLLogic suite (see below)
 python3 data/generate_fixtures.py  # regenerate test fixtures
 ```
+
+Coverage: ~70 `fixedformat-core` unit tests, a `proptest` suite proving
+`decode(encode(v)) == v` across every field kind (ASCII + EBCDIC), and 9 SQLLogic
+files (120+ assertions) covering every function, spec format, framing mode, NULL
+handling, and malformed-input behavior. Binary decoding is cross-checked against
+Python `struct.pack` reference bytes.
 
 The end-to-end suite (`test/sql/*.test`) runs against the built worker through
 the haybarn DuckDB unittest runner. One-time setup:

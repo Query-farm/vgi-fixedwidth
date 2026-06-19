@@ -1,0 +1,60 @@
+# name: test/sql/malformed.test
+# description: Behavior on malformed input — read_fixed fails fast (the whole
+#              query errors with a clear message; no partial/corrupt rows) when a
+#              record mid-file is invalid.
+# group: [sql]
+
+require-env VGI_TEST_WORKER
+
+statement ok
+ATTACH 'fixed' AS fixed (TYPE vgi, LOCATION '${VGI_TEST_WORKER}');
+
+statement ok
+SET search_path='fixed.main';
+
+# A bad COMP-3 digit nibble in the *second* record aborts the read.
+statement error
+SELECT * FROM read_fixed('data/bad_comp3.dat',
+    '01 R. 05 NM PIC X(3). 05 V PIC S9(3) COMP-3.', framing => 'fixed');
+----
+invalid comp-3 digit nibble
+
+# A line shorter than the layout (second newline record) is rejected.
+statement error
+SELECT * FROM read_fixed('data/short_line.dat', 'name:A10 qty:9(5)');
+----
+record too short
+
+# A fixed-length stream whose size isn't a multiple of the record length.
+statement error
+SELECT * FROM read_fixed('data/ragged_fb.dat', 'x:A5', framing => 'fixed');
+----
+not a multiple of record length
+
+# Truncated RDW (declared length overruns the stream) is rejected.
+statement error
+SELECT * FROM read_fixed('data/accounts.dat', 's:A3', framing => 'rdw');
+----
+overruns the stream
+
+# A scalar unpack on a too-short record errors the same way.
+statement error
+SELECT unpack_fixed('JOHN', 'name:A10 qty:9(5)');
+----
+record too short
+
+# Packing a negative value into an unsigned field is rejected (no silent wrap).
+statement error
+SELECT pack_fixed({'n': -5}, 'n:9(3)');
+----
+unsigned
+
+# The failure above is the malformed *second* record, not the layout: the first
+# record's bytes (ABC + packed 123) parse cleanly on their own. (read_fixed
+# decodes eagerly and fails fast, so a WHERE filter cannot rescue the bad file —
+# this is the intended data-integrity behavior.)
+query I
+SELECT unpack_fixed('\x41\x42\x43\x12\x3c'::BLOB,
+    '01 R. 05 NM PIC X(3). 05 V PIC S9(3) COMP-3.').V;
+----
+123
