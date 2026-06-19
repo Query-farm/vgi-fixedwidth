@@ -1,0 +1,6 @@
+/target
+/build
+**/*.rs.bk
+.DS_Store
+# write_fixed test output artifacts
+data/_*.dat

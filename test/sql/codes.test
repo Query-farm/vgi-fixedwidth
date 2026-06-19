@@ -1,0 +1,124 @@
+# name: test/sql/codes.test
+# description: Exhaustive Perl/Python template code coverage. Binary values are
+#              cross-checked against Python struct.pack reference bytes.
+# group: [sql]
+
+require-env VGI_TEST_WORKER
+
+statement ok
+ATTACH 'fixed' AS fixed (TYPE vgi, LOCATION '${VGI_TEST_WORKER}');
+
+statement ok
+SET search_path='fixed.main';
+
+# --- string codes: A (space pad), a (null pad), Z (null-terminated) ---
+query T
+SELECT unpack_fixed('HI   ', 's:A5').s;
+----
+HI
+
+query T
+SELECT unpack_fixed('HI\x00\x00\x00'::BLOB, 's:a5').s;
+----
+HI
+
+query T
+SELECT unpack_fixed('HI\x00XX'::BLOB, 's:Z5').s;
+----
+HI
+
+# right-justified string via JSON spec keeps significant content
+query T
+SELECT unpack_fixed('   42', '[{"name":"s","type":"str","width":5,"justify":"right"}]').s;
+----
+42
+
+# --- signed/unsigned integers, all widths ---
+# struct.pack('b', -5) = 0xfb ; struct.pack('B', 200) = 0xc8
+query I
+SELECT unpack_fixed('\xfb'::BLOB, 'n:c').n;
+----
+-5
+
+query I
+SELECT unpack_fixed('\xc8'::BLOB, 'n:C').n;
+----
+200
+
+# struct.pack('>q', -1) = ff ff ff ff ff ff ff ff
+query I
+SELECT unpack_fixed('\xff\xff\xff\xff\xff\xff\xff\xff'::BLOB, 'n:q').n;
+----
+-1
+
+# --- endianness aliases n N v V ---
+# n: uint16 BE 513 = 02 01 ; v: uint16 LE 513 = 01 02
+query I
+SELECT unpack_fixed('\x02\x01'::BLOB, 'n:n').n;
+----
+513
+
+query I
+SELECT unpack_fixed('\x01\x02'::BLOB, 'n:v').n;
+----
+513
+
+# N: uint32 BE 1 = 00 00 00 01 ; V: uint32 LE 1 = 01 00 00 00
+query I
+SELECT unpack_fixed('\x00\x00\x00\x01'::BLOB, 'n:N').n;
+----
+1
+
+query I
+SELECT unpack_fixed('\x01\x00\x00\x00'::BLOB, 'n:V').n;
+----
+1
+
+# --- floats: d (f64), f (f32), e (f16) ---
+# struct.pack('>d', 2.0) = 40 00 00 00 00 00 00 00
+query R
+SELECT unpack_fixed('\x40\x00\x00\x00\x00\x00\x00\x00'::BLOB, 'x:d').x;
+----
+2
+
+# struct.pack('>e', 1.5) = 3e 00
+query R
+SELECT unpack_fixed('\x3e\x00'::BLOB, 'x:e').x;
+----
+1.5
+
+# --- hex high/low nibble first ---
+query T
+SELECT unpack_fixed('\xab\xcd'::BLOB, 'h:H2').h;
+----
+abcd
+
+query T
+SELECT unpack_fixed('\xab\xcd'::BLOB, 'h:h2').h;
+----
+badc
+
+# --- bool ---
+query I
+SELECT unpack_fixed('\x00'::BLOB, 'b:?').b::INT;
+----
+0
+
+# --- pad bytes are consumed but produce no column ---
+query T
+SELECT unpack_fixed('AXXB', 'a:A1 x(2) b:A1').b;
+----
+B
+
+# --- repeat count -> LIST ---
+query I
+SELECT unpack_fixed('\x00\x01\x00\x02\x00\x03'::BLOB, 'v:s(3)').v[2];
+----
+2
+
+# --- order-control token sets the default for following codes ---
+# '< s s' reads both shorts little-endian: 01 00 = 1, 02 00 = 2
+query I
+SELECT unpack_fixed('\x01\x00\x02\x00'::BLOB, '< a:s b:s').b;
+----
+2

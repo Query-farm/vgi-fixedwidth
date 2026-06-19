@@ -1,0 +1,58 @@
+# name: test/sql/copybook.test
+# description: COBOL copybook front-end — groups (STRUCT), OCCURS (LIST),
+#              REDEFINES (folded STRUCT), and the JSON spec front-end.
+# group: [sql]
+
+require-env VGI_TEST_WORKER
+
+statement ok
+ATTACH 'fixed' AS fixed (TYPE vgi, LOCATION '${VGI_TEST_WORKER}');
+
+statement ok
+SET search_path='fixed.main';
+
+# Group item -> STRUCT.
+query T
+SELECT unpack_fixed('ABCDE042', '01 R. 05 ITEM. 10 SKU PIC X(5). 10 QTY PIC 9(3).').ITEM.SKU;
+----
+ABCDE
+
+query I
+SELECT unpack_fixed('ABCDE042', '01 R. 05 ITEM. 10 SKU PIC X(5). 10 QTY PIC 9(3).').ITEM.QTY;
+----
+42
+
+# OCCURS -> LIST (1-based indexing in DuckDB).
+query I
+SELECT unpack_fixed('010203', '01 R. 05 L OCCURS 3 PIC 9(2).').L[2];
+----
+2
+
+query I
+SELECT len(unpack_fixed('010203', '01 R. 05 L OCCURS 3 PIC 9(2).').L);
+----
+3
+
+# REDEFINES -> folded STRUCT union (both interpretations of the same bytes).
+query T
+SELECT unpack_fixed('00012345', '01 R. 05 RAW PIC X(8). 05 NUM REDEFINES RAW PIC 9(8).').RAW.RAW;
+----
+00012345
+
+query I
+SELECT unpack_fixed('00012345', '01 R. 05 RAW PIC X(8). 05 NUM REDEFINES RAW PIC 9(8).').RAW.NUM;
+----
+12345
+
+# JSON spec front-end produces the same result as the template.
+query I
+SELECT unpack_fixed('JOHN      00042',
+  '[{"name":"name","type":"str","width":10},{"name":"qty","type":"int","digits":5}]').qty;
+----
+42
+
+# Binary COMP width by digit count: PIC S9(9) COMP -> 4 bytes; value 7.
+query I
+SELECT unpack_fixed('\x00\x00\x00\x07'::BLOB, '01 R. 05 N PIC S9(9) COMP.').N;
+----
+7

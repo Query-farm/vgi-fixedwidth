@@ -1,0 +1,41 @@
+# name: test/sql/nulls.test
+# description: NULL propagation through unpack_fixed / pack_fixed and over a
+#              multi-row column. Creates a table, so it does NOT set search_path
+#              (that would target the read-only worker catalog) and fully-qualifies
+#              the worker calls instead.
+# group: [sql]
+
+require-env VGI_TEST_WORKER
+
+statement ok
+ATTACH 'fixed' AS fixed (TYPE vgi, LOCATION '${VGI_TEST_WORKER}');
+
+# NULL record -> NULL struct.
+query I
+SELECT fixed.main.unpack_fixed(NULL::VARCHAR, 'name:A10 qty:9(5)') IS NULL;
+----
+true
+
+# NULL struct -> NULL blob.
+query I
+SELECT fixed.main.pack_fixed(NULL::STRUCT(name VARCHAR, qty BIGINT), 'name:A10 qty:9(5)') IS NULL;
+----
+true
+
+# Mixed NULL / non-NULL rows in a single batch.
+statement ok
+CREATE TABLE recs (r VARCHAR);
+
+statement ok
+INSERT INTO recs VALUES ('JOHN      00042'), (NULL), ('JANE      00100');
+
+query I
+SELECT count(*) FROM recs WHERE fixed.main.unpack_fixed(r, 'name:A10 qty:9(5)') IS NULL;
+----
+1
+
+query I
+SELECT sum((fixed.main.unpack_fixed(r, 'name:A10 qty:9(5)')).qty)
+FROM recs;
+----
+142

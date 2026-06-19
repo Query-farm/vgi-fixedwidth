@@ -1,0 +1,46 @@
+# name: test/sql/basic.test
+# description: Version, template unpack_fixed/pack_fixed, and round-trip.
+# group: [sql]
+
+require-env VGI_TEST_WORKER
+
+statement ok
+ATTACH 'fixed' AS fixed (TYPE vgi, LOCATION '${VGI_TEST_WORKER}');
+
+statement ok
+SET search_path='fixed.main';
+
+query T
+SELECT fixedformat_version();
+----
+0.1.0
+
+# Template spec: 10-byte name + 5-digit display int.
+query T
+SELECT unpack_fixed('JOHN      00042', 'name:A10 qty:9(5)').name;
+----
+JOHN
+
+query I
+SELECT unpack_fixed('JOHN      00042', 'name:A10 qty:9(5)').qty;
+----
+42
+
+# Auto-named fields when no name: prefix.
+query T
+SELECT unpack_fixed('HELLOWORLD', 'A5 A5').field_1;
+----
+HELLO
+
+# pack_fixed is the exact inverse of unpack_fixed.
+query I
+SELECT (pack_fixed(unpack_fixed('JOHN      00042', 'name:A10 qty:9(5)'), 'name:A10 qty:9(5)')
+        = 'JOHN      00042'::BLOB)::INT;
+----
+1
+
+# Right-justified zero-padded numeric round-trips.
+query I
+SELECT (pack_fixed({'n': 7}, 'n:9(5)') = '00007'::BLOB)::INT;
+----
+1

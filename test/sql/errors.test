@@ -1,0 +1,40 @@
+# name: test/sql/errors.test
+# description: Error handling — short records, bad specs, overflow, missing files.
+# group: [sql]
+
+require-env VGI_TEST_WORKER
+
+statement ok
+ATTACH 'fixed' AS fixed (TYPE vgi, LOCATION '${VGI_TEST_WORKER}');
+
+statement ok
+SET search_path='fixed.main';
+
+# Record shorter than the layout requires.
+statement error
+SELECT unpack_fixed('JOHN', 'name:A10 qty:9(5)');
+----
+record too short
+
+# Unknown template code.
+statement error
+SELECT unpack_fixed('xx', 'a:Q@');
+----
+
+# Packing a value that doesn't fit the field width.
+statement error
+SELECT pack_fixed({'name': 'WAYTOOLONG'}, 'name:A3');
+----
+does not fit
+
+# Missing file.
+statement error
+SELECT * FROM read_fixed('data/does_not_exist.dat', 'name:A10');
+----
+File not found
+
+# Unknown encoding option.
+statement error
+SELECT * FROM read_fixed('data/accounts.dat', 'name:A10 qty:9(5)', encoding => 'klingon');
+----
+unknown encoding

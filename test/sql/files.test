@@ -1,0 +1,115 @@
+# name: test/sql/files.test
+# description: read_fixed across framings + EBCDIC, and write_fixed round-trip.
+#              Creates a table in the default catalog, so it does NOT set
+#              search_path (that would target the read-only worker catalog) and
+#              fully-qualifies the worker calls instead.
+# group: [sql]
+
+require-env VGI_TEST_WORKER
+
+statement ok
+ATTACH 'fixed' AS fixed (TYPE vgi, LOCATION '${VGI_TEST_WORKER}');
+
+# Newline-delimited ASCII flat file.
+query I
+SELECT qty FROM fixed.main.read_fixed('data/accounts.dat', 'name:A10 qty:9(5)') ORDER BY qty;
+----
+7
+42
+100
+
+# Fixed-length unframed (no delimiters): two 15-byte records.
+query T
+SELECT name FROM fixed.main.read_fixed('data/accounts_fb.dat', 'name:A10 qty:9(5)', framing => 'fixed')
+ORDER BY name;
+----
+JANE
+JOHN
+
+# EBCDIC text + COMP-3 packed decimal, fixed framing.
+query T
+SELECT AMT::VARCHAR FROM fixed.main.read_fixed(
+    'data/ebcdic_comp3.dat',
+    '01 R. 05 NM PIC X(5). 05 AMT PIC S9(3)V99 COMP-3.',
+    encoding => 'ebcdic', framing => 'fixed') ORDER BY AMT;
+----
+-67.89
+123.45
+
+# RDW variable-length framing.
+query T
+SELECT s FROM fixed.main.read_fixed('data/rdw.dat', 's:A3', framing => 'rdw') ORDER BY s;
+----
+AAA
+BBB
+CCC
+
+# Glob expands to multiple files (acct1.dat + acct2.dat).
+query II
+SELECT count(*), sum(qty)
+FROM fixed.main.read_fixed('data/acct*.dat', 'name:A10 qty:9(5)');
+----
+3	6
+
+# Large file (5000 records) exercises the multi-batch producer.
+query III
+SELECT count(*), min(id), max(id)
+FROM fixed.main.read_fixed('data/large.dat', 'id:9(7)');
+----
+5000	0	4999
+
+# write_fixed round-trip: write a relation, read it back.
+statement ok
+CREATE TABLE t (name VARCHAR, qty BIGINT);
+
+statement ok
+INSERT INTO t VALUES ('ALICE', 5), ('BOB', 999);
+
+query II
+SELECT rows_written, bytes_written
+FROM fixed.main.write_fixed((FROM t), 'data/_roundtrip.dat', 'name:A10 qty:9(5)');
+----
+2	32
+
+query I
+SELECT qty FROM fixed.main.read_fixed('data/_roundtrip.dat', 'name:A10 qty:9(5)') ORDER BY qty;
+----
+5
+999
+
+# write_fixed with EBCDIC + COMP-3, read back with the same options.
+statement ok
+CREATE TABLE acc (NM VARCHAR, AMT DECIMAL(5,2));
+
+statement ok
+INSERT INTO acc VALUES ('ACME', 123.45), ('FOO', -67.89);
+
+statement ok
+SELECT * FROM fixed.main.write_fixed((FROM acc), 'data/_ebcdic.dat',
+    '01 R. 05 NM PIC X(5). 05 AMT PIC S9(3)V99 COMP-3.',
+    encoding => 'ebcdic', framing => 'fixed');
+
+query T
+SELECT AMT::VARCHAR FROM fixed.main.read_fixed('data/_ebcdic.dat',
+    '01 R. 05 NM PIC X(5). 05 AMT PIC S9(3)V99 COMP-3.',
+    encoding => 'ebcdic', framing => 'fixed') ORDER BY AMT;
+----
+-67.89
+123.45
+
+# write_fixed with RDW framing, read back with RDW framing.
+statement ok
+CREATE TABLE r3 (s VARCHAR);
+
+statement ok
+INSERT INTO r3 VALUES ('AAA'), ('BBB'), ('CCC');
+
+statement ok
+SELECT * FROM fixed.main.write_fixed((FROM r3), 'data/_rdw.dat', 's:A3', framing => 'rdw');
+
+query T
+SELECT s FROM fixed.main.read_fixed('data/_rdw.dat', 's:A3', framing => 'rdw') ORDER BY s;
+----
+AAA
+BBB
+CCC

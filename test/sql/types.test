@@ -1,0 +1,77 @@
+# name: test/sql/types.test
+# description: Field types — binary ints/endianness, floats, hex, bool, COMP-3,
+#              zoned, separate-sign decimals. Binary cross-checked vs Python struct.
+# group: [sql]
+
+require-env VGI_TEST_WORKER
+
+statement ok
+ATTACH 'fixed' AS fixed (TYPE vgi, LOCATION '${VGI_TEST_WORKER}');
+
+statement ok
+SET search_path='fixed.main';
+
+# struct.pack('>hIf', -2, 7, 1.5) == b'\xff\xfe\x00\x00\x00\x07\x3f\xc0\x00\x00'
+query I
+SELECT unpack_fixed('\xff\xfe\x00\x00\x00\x07\x3f\xc0\x00\x00'::BLOB, 'a:s b:I c:f').a;
+----
+-2
+
+query I
+SELECT unpack_fixed('\xff\xfe\x00\x00\x00\x07\x3f\xc0\x00\x00'::BLOB, 'a:s b:I c:f').b;
+----
+7
+
+query R
+SELECT unpack_fixed('\xff\xfe\x00\x00\x00\x07\x3f\xc0\x00\x00'::BLOB, 'a:s b:I c:f').c;
+----
+1.5
+
+# Little-endian: struct.pack('<i', 258) == b'\x02\x01\x00\x00'
+query I
+SELECT unpack_fixed('\x02\x01\x00\x00'::BLOB, 'v:l<').v;
+----
+258
+
+# Hex (high nibble first).
+query T
+SELECT unpack_fixed('\xab\xcd'::BLOB, 'h:H2').h;
+----
+abcd
+
+# Boolean byte.
+query I
+SELECT unpack_fixed('\x01'::BLOB, 'b:?').b::INT;
+----
+1
+
+# COMP-3 packed decimal: 0x12 0x34 0x5C = +123.45 at scale 2.
+query T
+SELECT unpack_fixed('\x12\x34\x5c'::BLOB, '01 R. 05 AMT PIC S9(3)V99 COMP-3.').AMT::VARCHAR;
+----
+123.45
+
+# COMP-3 negative: 0x12 0x34 0x5D = -123.45.
+query T
+SELECT unpack_fixed('\x12\x34\x5d'::BLOB, '01 R. 05 AMT PIC S9(3)V99 COMP-3.').AMT::VARCHAR;
+----
+-123.45
+
+# Zoned overpunch: '1234N' = -12345 (last digit 5, negative overpunch).
+query I
+SELECT unpack_fixed('1234N', 'amt:S9(5)').amt;
+----
+-12345
+
+# Display decimal with a leading separate sign (JSON spec).
+query T
+SELECT unpack_fixed('-0123', '[{"name":"n","type":"decimal","digits":4,"signed":true,"sign":"leading"}]').n::VARCHAR;
+----
+-123
+
+# COMP-3 round-trips through pack_fixed.
+query I
+SELECT (pack_fixed({'AMT': -123.45}, '01 R. 05 AMT PIC S9(3)V99 COMP-3.')
+        = '\x12\x34\x5d'::BLOB)::INT;
+----
+1

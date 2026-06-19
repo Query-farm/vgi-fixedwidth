@@ -1,0 +1,52 @@
+# name: test/sql/scalar_encoding.test
+# description: The positional `encoding` overload of unpack_fixed / pack_fixed
+#              (DuckDB scalar functions take positional, not named, args).
+# group: [sql]
+
+require-env VGI_TEST_WORKER
+
+statement ok
+ATTACH 'fixed' AS fixed (TYPE vgi, LOCATION '${VGI_TEST_WORKER}');
+
+statement ok
+SET search_path='fixed.main';
+
+# 2-arg overload defaults to ASCII.
+query I
+SELECT unpack_fixed('JOHN      00042', 'name:A10 qty:9(5)').qty;
+----
+42
+
+# 3-arg overload: EBCDIC name X(5) "ACME " (c1 c3 d4 c5 40) + COMP-3 +123.45.
+query T
+SELECT unpack_fixed('\xc1\xc3\xd4\xc5\x40\x12\x34\x5c'::BLOB,
+                    '01 R. 05 NM PIC X(5). 05 AMT PIC S9(3)V99 COMP-3.',
+                    'ebcdic').NM;
+----
+ACME
+
+query T
+SELECT unpack_fixed('\xc1\xc3\xd4\xc5\x40\x12\x34\x5c'::BLOB,
+                    '01 R. 05 NM PIC X(5). 05 AMT PIC S9(3)V99 COMP-3.',
+                    'ebcdic').AMT::VARCHAR;
+----
+123.45
+
+# pack with the encoding overload round-trips back to the EBCDIC+COMP-3 bytes.
+query I
+SELECT (pack_fixed({'NM': 'ACME', 'AMT': 123.45},
+                   '01 R. 05 NM PIC X(5). 05 AMT PIC S9(3)V99 COMP-3.',
+                   'ebcdic')
+        = '\xc1\xc3\xd4\xc5\x40\x12\x34\x5c'::BLOB)::INT;
+----
+1
+
+# Full scalar round-trip under EBCDIC.
+query I
+SELECT (pack_fixed(
+          unpack_fixed('\xc1\xc3\xd4\xc5\x40\x12\x34\x5c'::BLOB,
+                       '01 R. 05 NM PIC X(5). 05 AMT PIC S9(3)V99 COMP-3.', 'ebcdic'),
+          '01 R. 05 NM PIC X(5). 05 AMT PIC S9(3)V99 COMP-3.', 'ebcdic')
+        = '\xc1\xc3\xd4\xc5\x40\x12\x34\x5c'::BLOB)::INT;
+----
+1

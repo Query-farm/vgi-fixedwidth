@@ -1,0 +1,101 @@
+# CLAUDE.md
+
+Guidance for working in this repository.
+
+## What this is
+
+`vgi-fixedformat` is a **VGI worker** (a standalone binary DuckDB launches and
+talks to over Apache Arrow IPC, `ATTACH 'fixed' (TYPE vgi, LOCATION '…')`) that
+brings Perl-`unpack` / Python-`struct` / COBOL-copybook fixed-width parsing and
+formatting to SQL. Functions live under catalog `fixed`, schema `main`.
+
+Built on the local VGI Rust SDK at `../vgi-rust/vgi` (path dep), arrow 58.
+Modeled on `../vgi-miint`.
+
+## SQL surface
+
+- `fixed.main.unpack_fixed(rec, spec [, encoding])` — parse a VARCHAR/BLOB record
+  into a STRUCT (`unpack` is a reserved DuckDB keyword, hence the `_fixed`
+  suffix). Scalar functions only take **positional** args in DuckDB, so `encoding`
+  is a positional const (registered as a 2-arg + 3-arg arity overload), not named;
+  spec format is auto-detected on the scalar path.
+- `fixed.main.pack_fixed(struct, spec [, encoding])` — format a STRUCT back into a
+  BLOB. `pack_fixed(unpack_fixed(rec, s), s) == rec`.
+- `fixed.main.read_fixed(path, spec [, format =>, encoding =>, framing =>, record_length =>])`
+  — scan a fixed-width file (table function; `path` may glob).
+- `fixed.main.write_fixed((FROM rel), path, spec [, format =>, encoding =>, framing =>])`
+  — write a relation to a fixed-width file (table-buffering sink); returns
+  `(rows_written, bytes_written)`.
+- `fixed.main.fixedformat_version()`.
+
+### Spec formats (auto-detected; override with `format =>`)
+
+- **template** — Perl/Python codes: `A`/`a`/`Z` strings, `c C s S l L i I q Q`
+  ints, `n N v V` BE/LE aliases, `e f d` floats, `H h` hex, `?` bool, `x` pad,
+  `< > ! = @` byte-order, plus display PIC tokens `9(5)` / `S9(7)V99` / `X(10)`.
+  Count is a width for string/hex/pad codes, a repeat (→ LIST) for numerics.
+- **json** — `[{"name","type","width"|"digits","scale","signed","endian","occurs",
+  "justify","pad","sign"}, ...]` (or `{"fields":[...]}`).
+- **copybook** — COBOL: nested groups (→ STRUCT), `PIC X/A/9/S/V`, `USAGE
+  COMP-3`/`COMP`/`BINARY`, `OCCURS n` (→ LIST), `REDEFINES` (→ folded STRUCT),
+  `SIGN LEADING/TRAILING [SEPARATE]`.
+
+Types: decimals (COMP-3/zoned/implied-point) → `DECIMAL(p,s)`, ints → `BIGINT`,
+floats → `REAL`/`DOUBLE`, text/hex → `VARCHAR`, `?` → `BOOLEAN`. Encodings:
+`ascii` (default) / `ebcdic` (CP037). Framing: `newline` (default) / `fixed` /
+`rdw` / `rdw_blocked`.
+
+## Layout
+
+- `crates/fixedformat-core` — pure codecs, **no Arrow/VGI deps** (`unsafe`
+  forbidden). The Layout IR (`layout.rs`) + three parsers (`template`, `jsonspec`,
+  `copybook`) + decode/encode + `packed` (COMP-3) / `zoned` / `ebcdic` (CP037
+  tables) / `framing`. All correctness lives here, unit-tested directly.
+- `crates/fixedformat-worker` — thin Arrow/VGI adapter: `arrow_map.rs` (Layout →
+  Arrow fields, Value → arrays incl. Decimal128/List/Struct), `value_in.rs` (Arrow
+  → Value for pack/write), `options.rs`, and `scalar/`, `table/`, `buffering/`.
+  `main.rs` registers everything and calls `Worker::run()`.
+- `test/sql/*.test` — sqllogictest e2e (run via haybarn unittest). `data/` holds
+  fixtures.
+
+## Build & test
+
+```sh
+cargo test -p fixedformat-core   # fast codec/parser unit tests (63)
+cargo clippy --all-targets       # keep clean
+cargo build --release            # build the worker
+./run_tests.sh                   # end-to-end SQLLogic suite (see below)
+./run_tests.sh test/sql/types.test   # single file (Catch2 filter; trailing * only)
+```
+
+End-to-end tests need the haybarn tooling (one-time):
+```sh
+uv tool install haybarn-unittest
+uv tool install haybarn
+echo "INSTALL vgi FROM community;" | uvx haybarn-cli
+```
+`run_tests.sh` builds the worker and runs `haybarn-unittest --test-dir "$PWD"
+"test/sql/*"` with `VGI_TEST_WORKER` pointed at the binary.
+
+## Conventions / gotchas
+
+- All algorithms go in `fixedformat-core` with unit tests; the worker is a thin
+  adapter. Binary codecs are cross-checked against Python `struct.pack` bytes.
+- Logs go to **stderr** — stdout is the Arrow-IPC channel.
+- The catalog name must match the ATTACH name; `main.rs` defaults
+  `VGI_WORKER_CATALOG_NAME` to `fixed`.
+- The spec is a **bind-time constant** so `unpack_fixed`'s STRUCT output type can
+  be resolved in `on_bind`.
+- `unpack` is a reserved keyword in DuckDB — the function is `unpack_fixed`.
+- Scalar functions only support **positional** args (named `-1` specs are
+  silently dropped by the binder). Table functions DO support named args, so
+  `read_fixed`/`write_fixed` take `format =>`/`encoding =>`/`framing =>` named,
+  while `unpack_fixed`/`pack_fixed` take a positional `encoding` via arity
+  overloads.
+- Pure-scalar tests use `SET search_path='fixed.main'`. Tests that `CREATE TABLE`
+  in the default catalog must NOT set search_path (it would target the read-only
+  worker catalog) — fully-qualify worker calls as `fixed.main.<fn>(...)` instead.
+- Table-valued input (`write_fixed`) is passed as a subquery: `write_fixed((FROM
+  tbl), …)`.
+- REDEFINES folds the base + redefiners into a STRUCT named after the base
+  (`raw STRUCT(raw, num)`), each child reinterpreting the same bytes.
