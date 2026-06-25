@@ -4,7 +4,10 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, RecordBatch, StringArray};
 use arrow_schema::DataType;
-use vgi::{ArgSpec, BindParams, BindResponse, FunctionMetadata, ProcessParams, ScalarFunction};
+use vgi::{
+    ArgSpec, BindParams, BindResponse, FunctionExample, FunctionMetadata, ProcessParams,
+    ScalarFunction,
+};
 use vgi_rpc::{Result, RpcError};
 
 pub struct FixedFormatVersion;
@@ -18,6 +21,42 @@ impl ScalarFunction for FixedFormatVersion {
         FunctionMetadata {
             description: "Returns the fixedformat worker version string".into(),
             return_type: Some(DataType::Utf8),
+            examples: vec![FunctionExample {
+                sql: "SELECT fixed.main.fixedformat_version();".into(),
+                description: "Return the fixedformat worker version string.".into(),
+                expected_output: None,
+            }],
+            tags: {
+                let mut tags = crate::meta::object_tags(
+                    "Fixed Format Worker Version",
+                    "Return the semantic version string of the running fixedformat worker binary. \
+                     Useful for diagnostics and confirming which build is attached.",
+                    "Return the fixedformat worker version string, e.g. \
+                     `fixedformat_version()` → '0.1.0'.",
+                    "version, build version, fixedformat_version, diagnostics, worker version, \
+                     semver",
+                );
+                // VGI509: ship at least one guaranteed-runnable example. This one
+                // needs no file or external backend, so it executes cleanly.
+                tags.push((
+                    "vgi.executable_examples".into(),
+                    r#"[
+  {
+    "description": "Return the worker version string.",
+    "sql": "SELECT fixed.main.fixedformat_version() AS version"
+  },
+  {
+    "description": "Unpack a pure-ASCII fixed-width record (an 8-char name and a 5-char code) into a struct, then pack it back unchanged (a clean round-trip).",
+    "sql": [
+      "SELECT fixed.main.unpack_fixed('JohnDoe 12345', 'A8 A5') AS rec",
+      "SELECT fixed.main.pack_fixed(fixed.main.unpack_fixed('JohnDoe 12345', 'A8 A5'), 'A8 A5')::VARCHAR AS roundtrip"
+    ]
+  }
+]"#
+                    .into(),
+                ));
+                tags
+            },
             ..Default::default()
         }
     }

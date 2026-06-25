@@ -46,25 +46,94 @@ impl TableFunction for ReadFixed {
     }
 
     fn metadata(&self) -> FunctionMetadata {
+        let mut tags = crate::meta::object_tags(
+            "Read Fixed-Width File",
+            "Scan a fixed-width / flat-file data file (the `path` may be a glob) into typed rows. \
+             Each record is framed per the `framing` option (newline / fixed / RDW) and decoded \
+             into a row of typed columns according to the layout `spec` — a Perl/Python `unpack` \
+             template, a JSON field list, or a COBOL copybook. The returned column set is dynamic: \
+             it is determined by the spec, with OCCURS becoming LIST columns and groups / \
+             REDEFINES becoming STRUCT columns. Use it to ingest mainframe or legacy flat-file \
+             data into SQL. This is the file-scanning counterpart of unpack_fixed and the inverse \
+             of write_fixed.",
+            "Scan a fixed-width file (`path` may glob) into rows, decoding each record per the \
+             layout `spec` (template, JSON, or COBOL copybook). The returned columns depend on \
+             the spec.",
+            "read fixed, scan, fixed-width file, flat file, ingest, copybook, mainframe, EBCDIC, \
+             RDW, COMP-3, file to rows, table function",
+        );
+        tags.push((
+            "vgi.result_columns_md".into(),
+            "The returned columns are **dynamic** — they are determined by the layout `spec` \
+             argument, one column per top-level field. Column names come from the field names in \
+             the spec, and types follow the field kinds:\n\n\
+             | spec field kind | column type |\n\
+             |---|---|\n\
+             | text / hex | VARCHAR |\n\
+             | integer | BIGINT |\n\
+             | float / double | REAL / DOUBLE |\n\
+             | COMP-3 / zoned / implied-point decimal | DECIMAL(p,s) |\n\
+             | `?` boolean | BOOLEAN |\n\
+             | OCCURS / repeat | LIST of the element type |\n\
+             | group / REDEFINES | STRUCT of the child fields |"
+                .into(),
+        ));
+        // NOTE: no `vgi.example_queries` here. `read_fixed` always scans an
+        // external file, so any example returns zero rows in an environment
+        // without the data file present (VGI902). The documented usage lives in
+        // `vgi.doc_md` / the schema example queries / executable_examples; the
+        // returned columns are documented via `vgi.result_columns_md` above.
         FunctionMetadata {
             description: "Read a fixed-width file (template / JSON / copybook spec) into rows"
                 .into(),
+            tags,
             ..Default::default()
         }
     }
 
     fn argument_specs(&self) -> Vec<ArgSpec> {
         vec![
-            ArgSpec::const_arg("path", 0, "varchar", "File path or glob"),
-            ArgSpec::const_arg("spec", 1, "varchar", "Layout spec (template/JSON/copybook)"),
-            ArgSpec::const_arg("format", -1, "varchar", "Spec format override"),
-            ArgSpec::const_arg("encoding", -1, "varchar", "ascii (default) or ebcdic"),
-            ArgSpec::const_arg("framing", -1, "varchar", "newline (default) / fixed / rdw"),
+            ArgSpec::const_arg(
+                "path",
+                0,
+                "varchar",
+                "Path to the fixed-width file to read; may be a glob (e.g. 'data/*.dat') to scan \
+                 several files in sorted order.",
+            ),
+            ArgSpec::const_arg(
+                "spec",
+                1,
+                "varchar",
+                "The record layout to decode each row with: a Perl/Python `unpack` template, a \
+                 JSON field list, or a COBOL copybook. Determines the output column names and \
+                 types; format is auto-detected unless `format` is given.",
+            ),
+            ArgSpec::const_arg(
+                "format",
+                -1,
+                "varchar",
+                "Force how `spec` is interpreted: 'template', 'json', or 'copybook'. Omit to \
+                 auto-detect.",
+            ),
+            ArgSpec::const_arg(
+                "encoding",
+                -1,
+                "varchar",
+                "Byte encoding of the file: 'ascii' (the default) or 'ebcdic' (CP037).",
+            ),
+            ArgSpec::const_arg(
+                "framing",
+                -1,
+                "varchar",
+                "How records are delimited in the file: 'newline' (the default), 'fixed' \
+                 (back-to-back records of equal length), 'rdw', or 'rdw_blocked'.",
+            ),
             ArgSpec::const_arg(
                 "record_length",
                 -1,
                 "int64",
-                "Override record length (fixed framing)",
+                "For 'fixed' framing, the byte length of each record. Defaults to the length \
+                 implied by the layout `spec`.",
             ),
         ]
     }

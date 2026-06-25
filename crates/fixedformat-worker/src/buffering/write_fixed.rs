@@ -35,20 +35,88 @@ impl TableBufferingFunction for WriteFixed {
     }
 
     fn metadata(&self) -> FunctionMetadata {
+        let mut tags = crate::meta::object_tags(
+            "Write Fixed-Width File",
+            "Write an input relation out to a fixed-width / flat-file data file — the inverse of \
+             read_fixed. Each input row's columns are matched by name to the layout fields, \
+             encoded to record bytes per the `spec` (Perl/Python `unpack` template, JSON field \
+             list, or COBOL copybook), framed per the `framing` option (newline / fixed / RDW), \
+             and streamed to `path`. Encoding may be ASCII or EBCDIC. Use it to emit mainframe or \
+             legacy flat-file output from SQL. Returns one summary row with the number of records \
+             and bytes written.",
+            "Write a relation to a fixed-width file, encoding each row per the layout `spec`. The \
+             inverse of `read_fixed`; returns `(rows_written, bytes_written)`.",
+            "write fixed, export, fixed-width file, flat file, emit, copybook, mainframe, EBCDIC, \
+             RDW, COMP-3, relation to file, table function, sink",
+        );
+        tags.push((
+            "vgi.result_columns_md".into(),
+            "| column | type | description |\n\
+             |---|---|---|\n\
+             | `rows_written` | BIGINT | Number of records written to the file. |\n\
+             | `bytes_written` | BIGINT | Total number of bytes written, including framing. |"
+                .into(),
+        ));
+        tags.push((
+            "vgi.example_queries".into(),
+            r#"[
+  {
+    "description": "Write a relation to a newline-framed fixed-width file.",
+    "sql": "SELECT * FROM fixed.main.write_fixed((SELECT 'Jo' AS name, 7 AS id), '/tmp/out.dat', 'A2 N')"
+  }
+]"#
+            .into(),
+        ));
         FunctionMetadata {
             description: "Write a relation to a fixed-width file (inverse of read_fixed)".into(),
+            tags,
             ..Default::default()
         }
     }
 
     fn argument_specs(&self) -> Vec<ArgSpec> {
         vec![
-            ArgSpec::column("data", 0, "table", "Input relation to format"),
-            ArgSpec::const_arg("path", 1, "varchar", "Output file path"),
-            ArgSpec::const_arg("spec", 2, "varchar", "Layout spec (template/JSON/copybook)"),
-            ArgSpec::const_arg("format", -1, "varchar", "Spec format override"),
-            ArgSpec::const_arg("encoding", -1, "varchar", "ascii (default) or ebcdic"),
-            ArgSpec::const_arg("framing", -1, "varchar", "newline (default) / fixed / rdw"),
+            ArgSpec::column(
+                "data",
+                0,
+                "table",
+                "The input relation to write out, supplied as a subquery (e.g. `(FROM tbl)`). Each \
+                 row's columns are matched by name to the layout fields.",
+            ),
+            ArgSpec::const_arg(
+                "path",
+                1,
+                "varchar",
+                "Path of the fixed-width file to create; it is overwritten if it already exists.",
+            ),
+            ArgSpec::const_arg(
+                "spec",
+                2,
+                "varchar",
+                "The record layout to encode each row with: a Perl/Python `unpack` template, a \
+                 JSON field list, or a COBOL copybook. Format is auto-detected unless `format` is \
+                 given.",
+            ),
+            ArgSpec::const_arg(
+                "format",
+                -1,
+                "varchar",
+                "Force how `spec` is interpreted: 'template', 'json', or 'copybook'. Omit to \
+                 auto-detect.",
+            ),
+            ArgSpec::const_arg(
+                "encoding",
+                -1,
+                "varchar",
+                "Byte encoding to write: 'ascii' (the default) or 'ebcdic' (CP037).",
+            ),
+            ArgSpec::const_arg(
+                "framing",
+                -1,
+                "varchar",
+                "How to delimit records in the output: 'newline' (the default), 'fixed', 'rdw', \
+                 or 'rdw_blocked'.",
+            ),
         ]
     }
 

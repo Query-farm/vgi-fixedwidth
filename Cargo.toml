@@ -5,23 +5,23 @@ members = ["crates/fixedformat-core", "crates/fixedformat-worker"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.86"
+rust-version = "1.90"
 license = "MIT"
 authors = ["Query Farm LLC <hello@query.farm>"]
 
 [workspace.dependencies]
-# VGI Rust SDK (worker side), published on crates.io. Pulls in vgi-rpc 0.2 and
-# arrow 58 transitively; keep arrow/vgi-rpc here in lockstep with vgi's pins so a
+# VGI Rust SDK (worker side), published on crates.io. Pulls in vgi-rpc 0.5 and
+# arrow 59 transitively; keep arrow/vgi-rpc here in lockstep with vgi's pins so a
 # single arrow/vgi-rpc resolves.
-vgi = "0.5.0"
-vgi-rpc = { version = "0.2.0", default-features = false, features = ["macros", "http"] }
-arrow = { version = "58", default-features = false, features = ["ipc"] }
-arrow-array = "58"
-arrow-buffer = "58"
-arrow-data = "58"
-arrow-schema = "58"
-arrow-select = "58"
-arrow-cast = "58"
+vgi = "0.9.2"
+vgi-rpc = { version = "0.5.0", default-features = false, features = ["macros", "http"] }
+arrow = { version = "59", default-features = false, features = ["ipc"] }
+arrow-array = "59"
+arrow-buffer = "59"
+arrow-data = "59"
+arrow-schema = "59"
+arrow-select = "59"
+arrow-cast = "59"
 
 fixedformat-core = { path = "crates/fixedformat-core" }
 

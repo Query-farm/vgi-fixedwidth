@@ -9,7 +9,10 @@ use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_schema::DataType;
 use fixedformat_core::decode::decode_record;
 use fixedformat_core::Value;
-use vgi::{ArgSpec, BindParams, BindResponse, FunctionMetadata, ProcessParams, ScalarFunction};
+use vgi::{
+    ArgSpec, BindParams, BindResponse, FunctionExample, FunctionMetadata, ProcessParams,
+    ScalarFunction,
+};
 use vgi_rpc::{Result, RpcError};
 
 use crate::arrow_map::{build_array, layout_fields};
@@ -27,6 +30,22 @@ fn ve(e: impl std::fmt::Display) -> RpcError {
     RpcError::value_error(e.to_string())
 }
 
+/// Representative `vgi.example_queries` (VGI306) for `unpack_fixed`, shared by
+/// both arity overloads. Each entry is a self-contained, catalog-qualified query.
+fn example_queries_json() -> String {
+    r#"[
+  {
+    "description": "Unpack an 8-char name and a 5-char code from an ASCII record.",
+    "sql": "SELECT fixed.main.unpack_fixed('JohnDoe 12345', 'A8 A5')"
+  },
+  {
+    "description": "Unpack three space-padded text fields from one record.",
+    "sql": "SELECT fixed.main.unpack_fixed('ACME      NY 100', 'A10 A3 A3')"
+  }
+]"#
+    .to_string()
+}
+
 impl ScalarFunction for Unpack {
     fn name(&self) -> &str {
         // `unpack` is a reserved keyword (type_function) in DuckDB, so the
@@ -35,24 +54,80 @@ impl ScalarFunction for Unpack {
     }
 
     fn metadata(&self) -> FunctionMetadata {
+        // The two arity overloads register under the same name; give each a
+        // distinct description and example so they don't collide (VGI120).
+        let description = if self.with_encoding {
+            "Parse a fixed-width record into a STRUCT using the given layout spec and byte \
+             encoding (ascii or ebcdic)"
+        } else {
+            "Parse a fixed-width record into a STRUCT using the given layout spec (template / \
+             JSON / copybook), assuming ASCII bytes"
+        };
+        let example = if self.with_encoding {
+            FunctionExample {
+                sql: "SELECT fixed.main.unpack_fixed(rec, 'A8 N', 'ebcdic') FROM (SELECT \
+                      'JohnDoe \\x00\\x00\\x00\\x2A'::BLOB AS rec);"
+                    .into(),
+                description: "Parse an EBCDIC-encoded record into a STRUCT.".into(),
+                expected_output: None,
+            }
+        } else {
+            FunctionExample {
+                sql: "SELECT fixed.main.unpack_fixed('JohnDoe \\x00\\x00\\x00\\x2A'::BLOB, \
+                      'A8 N');"
+                    .into(),
+                description: "Parse an 8-char name plus a big-endian 32-bit id into a STRUCT."
+                    .into(),
+                expected_output: None,
+            }
+        };
+        let mut tags = crate::meta::object_tags(
+            "Unpack Fixed-Width Record",
+            "Decode a single fixed-width / flat-file record (a VARCHAR or BLOB) into a typed \
+             STRUCT whose fields are named and typed by the layout spec. The spec is a Perl/Python \
+             `unpack` template string, a JSON field list, or a COBOL copybook (auto-detected), and \
+             supports packed/zoned decimals, OCCURS lists (→ LIST), groups and REDEFINES (→ \
+             STRUCT). The spec is a bind-time constant so the STRUCT output type is known at plan \
+             time. This is the inverse of pack_fixed.",
+            "Parse a fixed-width record into a STRUCT, e.g. \
+             `unpack_fixed('JohnDoe ...', 'A8 N')`. The layout spec is a template string, JSON \
+             spec, or COBOL copybook.",
+            "unpack, parse, decode, fixed-width, flat file, perl unpack, python struct, copybook, \
+             COBOL, EBCDIC, COMP-3, record to struct",
+        );
+        tags.push(("vgi.example_queries".into(), example_queries_json()));
         FunctionMetadata {
-            description:
-                "Parse a fixed-width record (template / JSON / copybook spec) into a STRUCT".into(),
+            description: description.into(),
+            examples: vec![example],
+            tags,
             ..Default::default()
         }
     }
 
     fn argument_specs(&self) -> Vec<ArgSpec> {
         let mut specs = vec![
-            ArgSpec::any_column("rec", 0, "Fixed-width record (VARCHAR or BLOB)"),
-            ArgSpec::const_arg("spec", 1, "varchar", "Layout spec (template/JSON/copybook)"),
+            ArgSpec::any_column(
+                "rec",
+                0,
+                "A single fixed-width record to decode — one row's worth of bytes, laid out as \
+                 described by `spec`.",
+            ),
+            ArgSpec::const_arg(
+                "spec",
+                1,
+                "varchar",
+                "The layout describing the record's fields: a Perl/Python `unpack` template \
+                 string (e.g. 'A8 N'), a JSON field list, or a COBOL copybook. The format is \
+                 auto-detected. Determines the STRUCT field names and types.",
+            ),
         ];
         if self.with_encoding {
             specs.push(ArgSpec::const_arg(
                 "encoding",
                 2,
                 "varchar",
-                "ascii (default) or ebcdic",
+                "Byte encoding of the record: 'ascii' (the default) or 'ebcdic' (CP037). \
+                 Controls how text and zoned-number bytes are interpreted.",
             ));
         }
         specs
