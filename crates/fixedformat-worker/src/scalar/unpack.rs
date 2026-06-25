@@ -30,8 +30,8 @@ fn ve(e: impl std::fmt::Display) -> RpcError {
     RpcError::value_error(e.to_string())
 }
 
-/// Representative `vgi.example_queries` (VGI306) for `unpack_fixed`, shared by
-/// both arity overloads. Each entry is a self-contained, catalog-qualified query.
+/// Representative `vgi.example_queries` (VGI306) for the 2-argument `unpack_fixed`
+/// overload. Each entry is a self-contained, catalog-qualified query.
 fn example_queries_json() -> String {
     r#"[
   {
@@ -41,6 +41,22 @@ fn example_queries_json() -> String {
   {
     "description": "Unpack three space-padded text fields from one record.",
     "sql": "SELECT fixed.main.unpack_fixed('ACME      NY 100', 'A10 A3 A3')"
+  }
+]"#
+    .to_string()
+}
+
+/// Representative `vgi.example_queries` (VGI306) for the 3-argument `unpack_fixed`
+/// overload — these exercise the distinguishing positional `encoding` argument.
+fn example_queries_json_with_encoding() -> String {
+    r#"[
+  {
+    "description": "Unpack an ASCII record by passing 'ascii' explicitly (the default).",
+    "sql": "SELECT fixed.main.unpack_fixed('JohnDoe 12345', 'A8 A5', 'ascii')"
+  },
+  {
+    "description": "Unpack an EBCDIC (CP037) record; the encoding also governs zoned/COMP-3 sign nibbles.",
+    "sql": "SELECT fixed.main.unpack_fixed(rec, 'A8 N', 'ebcdic') FROM (SELECT 'JohnDoe \x00\x00\x00\x2A'::BLOB AS rec)"
   }
 ]"#
     .to_string()
@@ -81,21 +97,50 @@ impl ScalarFunction for Unpack {
                 expected_output: None,
             }
         };
-        let mut tags = crate::meta::object_tags(
-            "Unpack Fixed-Width Record",
-            "Decode a single fixed-width / flat-file record (a VARCHAR or BLOB) into a typed \
-             STRUCT whose fields are named and typed by the layout spec. The spec is a Perl/Python \
-             `unpack` template string, a JSON field list, or a COBOL copybook (auto-detected), and \
-             supports packed/zoned decimals, OCCURS lists (→ LIST), groups and REDEFINES (→ \
-             STRUCT). The spec is a bind-time constant so the STRUCT output type is known at plan \
-             time. This is the inverse of pack_fixed.",
-            "Parse a fixed-width record into a STRUCT, e.g. \
-             `unpack_fixed('JohnDoe ...', 'A8 N')`. The layout spec is a template string, JSON \
-             spec, or COBOL copybook.",
-            "unpack, parse, decode, fixed-width, flat file, perl unpack, python struct, copybook, \
-             COBOL, EBCDIC, COMP-3, record to struct",
-        );
-        tags.push(("vgi.example_queries".into(), example_queries_json()));
+        let mut tags = if self.with_encoding {
+            crate::meta::object_tags(
+                "Unpack Fixed-Width Record (with encoding)",
+                "Decode a single fixed-width / flat-file record (a VARCHAR or BLOB) into a typed \
+                 STRUCT whose fields are named and typed by the layout spec, controlling the byte \
+                 `encoding`. This 3-argument overload adds a positional `encoding` argument: \
+                 'ascii' (the default) or 'ebcdic' (CP037). EBCDIC affects not only character \
+                 fields but also the sign nibbles of zoned and COMP-3 (packed-decimal) numbers. \
+                 The spec is a Perl/Python `unpack` template string, a JSON field list, or a COBOL \
+                 copybook (auto-detected), and supports packed/zoned decimals, OCCURS lists (→ \
+                 LIST), groups and REDEFINES (→ STRUCT). The spec is a bind-time constant so the \
+                 STRUCT output type is known at plan time. This is the inverse of pack_fixed when \
+                 the same encoding is supplied to both.",
+                "Parse a fixed-width record into a STRUCT under an explicit byte encoding, e.g. \
+                 `unpack_fixed(rec, 'A8 N', 'ebcdic')`. The third argument is `encoding` — 'ascii' \
+                 (default) or 'ebcdic' (CP037), which also governs zoned/COMP-3 sign nibbles. It \
+                 is positional, not named.",
+                "unpack, parse, decode, fixed-width, flat file, perl unpack, python struct, \
+                 copybook, COBOL, EBCDIC, CP037, encoding, COMP-3, zoned decimal, record to struct",
+            )
+        } else {
+            crate::meta::object_tags(
+                "Unpack Fixed-Width Record",
+                "Decode a single fixed-width / flat-file record (a VARCHAR or BLOB) into a typed \
+                 STRUCT whose fields are named and typed by the layout spec, assuming ASCII bytes \
+                 (use the 3-argument overload to decode EBCDIC). The spec is a Perl/Python \
+                 `unpack` template string, a JSON field list, or a COBOL copybook (auto-detected), \
+                 and supports packed/zoned decimals, OCCURS lists (→ LIST), groups and REDEFINES \
+                 (→ STRUCT). The spec is a bind-time constant so the STRUCT output type is known \
+                 at plan time. This is the inverse of pack_fixed.",
+                "Parse a fixed-width ASCII record into a STRUCT, e.g. \
+                 `unpack_fixed('JohnDoe ...', 'A8 N')`. The layout spec is a template string, JSON \
+                 spec, or COBOL copybook. To decode EBCDIC, use the 3-argument overload with an \
+                 `encoding` argument.",
+                "unpack, parse, decode, fixed-width, flat file, perl unpack, python struct, \
+                 copybook, COBOL, EBCDIC, COMP-3, record to struct",
+            )
+        };
+        let examples_json = if self.with_encoding {
+            example_queries_json_with_encoding()
+        } else {
+            example_queries_json()
+        };
+        tags.push(("vgi.example_queries".into(), examples_json));
         FunctionMetadata {
             description: description.into(),
             examples: vec![example],

@@ -50,11 +50,17 @@ fn catalog_metadata(name: &str) -> CatalogModel {
                 "Parse and format fixed-width / flat-file records directly in SQL. Decode a \
                  record string or blob into a typed STRUCT with `unpack_fixed`, re-encode a STRUCT \
                  back to record bytes with `pack_fixed`, scan a fixed-width file into rows with \
-                 `read_fixed`, and write a relation out to a fixed-width file with `write_fixed`. \
-                 Layouts are given as Perl/Python `unpack` template strings, JSON field specs, or \
-                 COBOL copybooks, and support ASCII or EBCDIC (CP037) encoding, packed/zoned \
-                 decimals (COMP-3), OCCURS lists, nested groups, REDEFINES, and newline / fixed / \
-                 RDW record framing. Use it to ingest or emit mainframe and legacy flat-file data."
+                 `read_fixed`, write a relation out to a fixed-width file with `write_fixed`, and \
+                 report the worker version with `fixedformat_version`. Layouts are given as \
+                 Perl/Python `unpack` template strings, JSON field specs, or COBOL copybooks, and \
+                 support ASCII or EBCDIC (CP037) encoding, packed/zoned decimals (COMP-3), OCCURS \
+                 lists, nested groups, REDEFINES, and four record-framing modes: newline, fixed, \
+                 rdw, and rdw_blocked. The scalar pair `unpack_fixed`/`pack_fixed` round-trips: \
+                 `pack_fixed(unpack_fixed(rec, s), s) == rec`. Zero-config defaults are newline \
+                 framing and ascii encoding, so the common case is just `(record, spec)`. The spec \
+                 format (template / JSON / copybook) is auto-detected; on the table functions you \
+                 can force it with `format =>` if a layout is ambiguous. Use it to ingest or emit \
+                 mainframe and legacy flat-file data."
                     .to_string(),
             ),
             (
@@ -68,7 +74,11 @@ fn catalog_metadata(name: &str) -> CatalogModel {
                  (BIGINT / REAL / DOUBLE / VARCHAR / BOOLEAN, `DECIMAL(p,s)` for COMP-3 / zoned / \
                  implied-point numbers, LIST for `OCCURS`, STRUCT for groups and REDEFINES). \
                  Encodings are `ascii` (default) or `ebcdic` (CP037); record framing is `newline` \
-                 (default), `fixed`, `rdw`, or `rdw_blocked`.\n\n**Scalars:** `unpack_fixed` \
+                 (default), `fixed`, `rdw`, or `rdw_blocked`. The spec format is auto-detected from \
+                 the spec text; on the table functions you can force it with `format =>` \
+                 ('template' / 'json' / 'copybook') when a layout would otherwise be ambiguous. \
+                 With the defaults (newline framing, ascii encoding) the common call is just \
+                 `(record, spec)`.\n\n**Scalars:** `unpack_fixed` \
                  (record → STRUCT), `pack_fixed` (STRUCT → record bytes, the inverse), and \
                  `fixedformat_version`.\n\n**Table functions:** `read_fixed` (scan a fixed-width \
                  file, path may glob) and `write_fixed` (write a relation out to a fixed-width \
@@ -114,18 +124,33 @@ fn catalog_metadata(name: &str) -> CatalogModel {
                     "vgi.doc_llm".to_string(),
                     "Functions for fixed-width / flat-file records: parse a record into a STRUCT \
                      (`unpack_fixed`), format a STRUCT back into record bytes (`pack_fixed`), scan \
-                     a fixed-width file into rows (`read_fixed`), and write a relation to a \
-                     fixed-width file (`write_fixed`). Layouts are template strings, JSON specs, \
-                     or COBOL copybooks; encodings ASCII or EBCDIC."
+                     a fixed-width file into rows (`read_fixed`), write a relation to a \
+                     fixed-width file (`write_fixed`), and report the worker version \
+                     (`fixedformat_version`). Returned shapes: `unpack_fixed` → STRUCT, \
+                     `pack_fixed` → BLOB, `write_fixed` → (rows_written, bytes_written), \
+                     `read_fixed` → a dynamic column set driven by the spec. Layouts are template \
+                     strings, JSON specs, or COBOL copybooks (auto-detected; force with \
+                     `format =>` on the table functions). Field kinds map to columns as text/hex → \
+                     VARCHAR, integers → BIGINT, COMP-3/zoned/implied-point → DECIMAL(p,s), OCCURS \
+                     → LIST, group/REDEFINES → STRUCT. Encodings are ascii (default) or ebcdic \
+                     (CP037); framing is newline (default), fixed, rdw, or rdw_blocked. With the \
+                     defaults the common call is just `(record, spec)`."
                         .to_string(),
                 ),
                 (
                     "vgi.doc_md".to_string(),
-                    "The single schema for the `fixed` worker. It holds the fixed-width record \
-                     functions — the `unpack_fixed` / `pack_fixed` scalar inverse pair and the \
-                     `fixedformat_version` scalar — plus the `read_fixed` and `write_fixed` table \
-                     functions for scanning and emitting fixed-width files. Layouts are given as \
-                     Perl/Python `unpack` templates, JSON field specs, or COBOL copybooks."
+                    "The single (and only) schema for the `fixed` worker — the catalog name \
+                     matches the `ATTACH` name, so qualify calls as `fixed.main.<fn>(...)`. It \
+                     holds the fixed-width record functions: the `unpack_fixed` (→ STRUCT) / \
+                     `pack_fixed` (→ BLOB) scalar inverse pair and the `fixedformat_version` \
+                     scalar, plus the `read_fixed` (→ dynamic columns) and `write_fixed` (→ \
+                     `(rows_written, bytes_written)`) table functions for scanning and emitting \
+                     fixed-width files. Layouts are given as Perl/Python `unpack` templates, JSON \
+                     field specs, or COBOL copybooks (auto-detected; override with `format =>` on \
+                     the table functions). Encodings are ascii (default) or ebcdic (CP037); record \
+                     framing is newline (default), fixed, rdw, or rdw_blocked. Field kinds map to \
+                     columns as text/hex → VARCHAR, integers → BIGINT, COMP-3/zoned/implied-point \
+                     → DECIMAL(p,s), OCCURS → LIST, group/REDEFINES → STRUCT."
                         .to_string(),
                 ),
                 // VGI506 representative example queries for the schema.

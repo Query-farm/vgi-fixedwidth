@@ -29,10 +29,16 @@ impl ScalarFunction for FixedFormatVersion {
             tags: {
                 let mut tags = crate::meta::object_tags(
                     "Fixed Format Worker Version",
-                    "Return the semantic version string of the running fixedformat worker binary. \
-                     Useful for diagnostics and confirming which build is attached.",
+                    "Return the version string of the running fixedformat worker binary (the \
+                     worker's own build version, not the SDK/protocol version; it is the crate's \
+                     Cargo version). The string is semver, MAJOR.MINOR.PATCH (e.g. '0.1.0'). The \
+                     function takes no arguments and is deterministic — it always returns the same \
+                     single VARCHAR value (never NULL) for a given build, so it need not be \
+                     re-evaluated per row. Useful for diagnostics and confirming which build is \
+                     attached.",
                     "Return the fixedformat worker version string, e.g. \
-                     `fixedformat_version()` → '0.1.0'.",
+                     `fixedformat_version()` → '0.1.0'. Argument-free and deterministic; returns a \
+                     single semver (MAJOR.MINOR.PATCH) VARCHAR.",
                     "version, build version, fixedformat_version, diagnostics, worker version, \
                      semver",
                 );

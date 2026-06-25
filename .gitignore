@@ -4,3 +4,6 @@
 .DS_Store
 # write_fixed test output artifacts
 data/_*.dat
+
+# vgi-lint review cache
+.vgi-review-cache.json

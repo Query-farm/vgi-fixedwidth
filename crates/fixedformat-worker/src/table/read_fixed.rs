@@ -48,19 +48,30 @@ impl TableFunction for ReadFixed {
     fn metadata(&self) -> FunctionMetadata {
         let mut tags = crate::meta::object_tags(
             "Read Fixed-Width File",
-            "Scan a fixed-width / flat-file data file (the `path` may be a glob) into typed rows. \
-             Each record is framed per the `framing` option (newline / fixed / RDW) and decoded \
-             into a row of typed columns according to the layout `spec` — a Perl/Python `unpack` \
-             template, a JSON field list, or a COBOL copybook. The returned column set is dynamic: \
-             it is determined by the spec, with OCCURS becoming LIST columns and groups / \
-             REDEFINES becoming STRUCT columns. Use it to ingest mainframe or legacy flat-file \
-             data into SQL. This is the file-scanning counterpart of unpack_fixed and the inverse \
-             of write_fixed.",
-            "Scan a fixed-width file (`path` may glob) into rows, decoding each record per the \
-             layout `spec` (template, JSON, or COBOL copybook). The returned columns depend on \
-             the spec.",
+            "Scan a fixed-width / flat-file data file into typed rows. `path` may be a glob (e.g. \
+             '/data/*.dat'); matching files are read in sorted order and their rows concatenated. \
+             Each record is framed per the named `framing =>` argument ('newline' the default, \
+             'fixed', 'rdw', or 'rdw_blocked') and decoded into a row of typed columns according \
+             to the layout `spec` — a Perl/Python `unpack` template, a JSON field list, or a COBOL \
+             copybook (format auto-detected unless you pass `format =>` 'template' / 'json' / \
+             'copybook'). The named `encoding =>` argument is 'ascii' (default) or 'ebcdic' \
+             (CP037). The named `record_length =>` argument is the per-record length in BYTES; it \
+             is only used for 'fixed' framing (back-to-back records of equal length) and defaults \
+             to the length implied by the `spec`; it is ignored for the other framings. `format`, \
+             `encoding`, `framing`, and `record_length` are all NAMED arguments. The returned \
+             column set is dynamic: it is determined by the spec, with OCCURS becoming LIST \
+             columns and groups / REDEFINES becoming STRUCT columns. Use it to ingest mainframe or \
+             legacy flat-file data into SQL. This is the file-scanning counterpart of unpack_fixed \
+             and the inverse of write_fixed.",
+            "Scan a fixed-width file into rows, decoding each record per the layout `spec` \
+             (template, JSON, or COBOL copybook). `path` may glob (e.g. \
+             `read_fixed('/data/*.dat', 'A10 N')`), reading matching files in sorted order. \
+             Optional NAMED args: `format =>`, `encoding =>` ('ascii'/'ebcdic'), `framing =>` \
+             ('newline'/'fixed'/'rdw'/'rdw_blocked'), and `record_length =>` (per-record length in \
+             bytes, used only for `fixed` framing). The returned columns are dynamic — they depend \
+             on the spec, with OCCURS → LIST and group/REDEFINES → STRUCT.",
             "read fixed, scan, fixed-width file, flat file, ingest, copybook, mainframe, EBCDIC, \
-             RDW, COMP-3, file to rows, table function",
+             RDW, rdw_blocked, record_length, COMP-3, glob, file to rows, table function",
         );
         tags.push((
             "vgi.result_columns_md".into(),
@@ -75,8 +86,20 @@ impl TableFunction for ReadFixed {
              | COMP-3 / zoned / implied-point decimal | DECIMAL(p,s) |\n\
              | `?` boolean | BOOLEAN |\n\
              | OCCURS / repeat | LIST of the element type |\n\
-             | group / REDEFINES | STRUCT of the child fields |"
-                .into(),
+             | group / REDEFINES | STRUCT of the child fields |\n\n\
+             **Example usage** (illustrative — these scan real files, so they are not run in the \
+             lint sandbox):\n\n\
+             ```sql\n\
+             -- Glob several files; columns name VARCHAR, id BIGINT:\n\
+             SELECT * FROM fixed.main.read_fixed('/data/*.dat', 'A10 N');\n\n\
+             -- Fixed framing, 16-byte records; an OCCURS spec yields a LIST column:\n\
+             SELECT * FROM fixed.main.read_fixed('/data/cust.dat', 'A10 9(3) OCCURS 2',\n\
+             \x20                               framing => 'fixed', record_length => 16);\n\n\
+             -- A COBOL copybook with a nested group yields a STRUCT column:\n\
+             SELECT * FROM fixed.main.read_fixed('/data/recs.bin', '<copybook text>',\n\
+             \x20                               format => 'copybook', encoding => 'ebcdic');\n\
+             ```"
+            .into(),
         ));
         // NOTE: no `vgi.example_queries` here. `read_fixed` always scans an
         // external file, so any example returns zero rows in an environment
@@ -132,7 +155,8 @@ impl TableFunction for ReadFixed {
                 "record_length",
                 -1,
                 "int64",
-                "For 'fixed' framing, the byte length of each record. Defaults to the length \
+                "The length of each record in BYTES. Used only for 'fixed' framing (back-to-back \
+                 equal-length records); ignored for the other framings. Defaults to the length \
                  implied by the layout `spec`.",
             ),
         ]

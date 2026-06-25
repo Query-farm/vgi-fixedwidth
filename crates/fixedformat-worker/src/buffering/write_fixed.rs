@@ -38,16 +38,24 @@ impl TableBufferingFunction for WriteFixed {
         let mut tags = crate::meta::object_tags(
             "Write Fixed-Width File",
             "Write an input relation out to a fixed-width / flat-file data file — the inverse of \
-             read_fixed. Each input row's columns are matched by name to the layout fields, \
+             read_fixed. The `data` relation is passed as a subquery (e.g. `(FROM tbl)` or \
+             `(SELECT ...)`). Each input row's columns are matched by name to the layout fields, \
              encoded to record bytes per the `spec` (Perl/Python `unpack` template, JSON field \
-             list, or COBOL copybook), framed per the `framing` option (newline / fixed / RDW), \
-             and streamed to `path`. Encoding may be ASCII or EBCDIC. Use it to emit mainframe or \
-             legacy flat-file output from SQL. Returns one summary row with the number of records \
-             and bytes written.",
+             list, or COBOL copybook; format auto-detected unless you pass `format =>` 'template' \
+             / 'json' / 'copybook'), framed per the named `framing =>` argument ('newline' the \
+             default, 'fixed', 'rdw', or 'rdw_blocked'), encoded under named `encoding =>` ('ascii' \
+             the default, or 'ebcdic'/CP037), and streamed to `path` (overwritten if it exists). \
+             `format`, `encoding`, and `framing` are NAMED arguments. Use it to emit mainframe or \
+             legacy flat-file output from SQL. Returns exactly one summary row with two columns: \
+             `rows_written BIGINT` (number of records written) and `bytes_written BIGINT` (total \
+             bytes written including framing).",
             "Write a relation to a fixed-width file, encoding each row per the layout `spec`. The \
-             inverse of `read_fixed`; returns `(rows_written, bytes_written)`.",
+             relation is a subquery, e.g. `write_fixed((FROM tbl), '/tmp/out.dat', 'A10 N')`. \
+             Optional NAMED args: `format =>`, `encoding =>` ('ascii'/'ebcdic'), `framing =>` \
+             ('newline'/'fixed'/'rdw'/'rdw_blocked'). The inverse of `read_fixed`; returns one row \
+             `(rows_written BIGINT, bytes_written BIGINT)`.",
             "write fixed, export, fixed-width file, flat file, emit, copybook, mainframe, EBCDIC, \
-             RDW, COMP-3, relation to file, table function, sink",
+             RDW, rdw_blocked, COMP-3, relation to file, table function, sink",
         );
         tags.push((
             "vgi.result_columns_md".into(),
@@ -61,8 +69,12 @@ impl TableBufferingFunction for WriteFixed {
             "vgi.example_queries".into(),
             r#"[
   {
-    "description": "Write a relation to a newline-framed fixed-width file.",
+    "description": "Write a relation to a newline-framed fixed-width file (the default framing).",
     "sql": "SELECT * FROM fixed.main.write_fixed((SELECT 'Jo' AS name, 7 AS id), '/tmp/out.dat', 'A2 N')"
+  },
+  {
+    "description": "Write back-to-back fixed-length records (no newline) by forcing the framing named argument.",
+    "sql": "SELECT * FROM fixed.main.write_fixed((SELECT 'Jo' AS name, 7 AS id), '/tmp/out.dat', 'A2 N', framing => 'fixed')"
   }
 ]"#
             .into(),
