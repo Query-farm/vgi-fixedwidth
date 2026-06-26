@@ -1,0 +1,74 @@
+# name: test/sql/s3_roundtrip.test
+# description: Live S3-compatible (MinIO) round-trip: write_fixed -> read_fixed
+#              over s3://, with credentials from a DuckDB CREATE SECRET resolved
+#              through the two-phase secret bind. GATED: skipped unless the
+#              FIXEDFORMAT_S3_TEST_* env vars are set and httpfs is available, so
+#              CI without a MinIO/S3 endpoint stays green.
+#
+#              To run against a local MinIO (mc alias 'local', a bucket 'fixed'):
+#                export FIXEDFORMAT_S3_TEST_BUCKET=fixed
+#                export FIXEDFORMAT_S3_TEST_ENDPOINT=localhost:9000
+#                export FIXEDFORMAT_S3_TEST_KEY_ID=minioadmin
+#                export FIXEDFORMAT_S3_TEST_SECRET=minioadmin
+#                ./run_tests.sh test/sql/s3_roundtrip.test
+# group: [sql]
+
+require-env VGI_TEST_WORKER
+
+require-env FIXEDFORMAT_S3_TEST_BUCKET
+
+require-env FIXEDFORMAT_S3_TEST_ENDPOINT
+
+require-env FIXEDFORMAT_S3_TEST_KEY_ID
+
+require-env FIXEDFORMAT_S3_TEST_SECRET
+
+require httpfs
+
+statement ok
+ATTACH 'fixed' AS fixed (TYPE vgi, LOCATION '${VGI_TEST_WORKER}');
+
+# Path-style, plain-HTTP secret for MinIO. Unscoped, so it covers every s3://
+# path; the worker maps these fields onto object_store's S3 credentials.
+statement ok
+CREATE OR REPLACE SECRET ff_s3 (
+    TYPE s3,
+    KEY_ID '${FIXEDFORMAT_S3_TEST_KEY_ID}',
+    SECRET '${FIXEDFORMAT_S3_TEST_SECRET}',
+    ENDPOINT '${FIXEDFORMAT_S3_TEST_ENDPOINT}',
+    URL_STYLE 'path',
+    USE_SSL false,
+    REGION 'us-east-1');
+
+statement ok
+CREATE TABLE src AS SELECT * FROM (VALUES ('JANE', 7), ('JOHN', 42)) AS t(name, id);
+
+# Write two newline-framed records (name A4 + 3-digit id = 7 bytes + '\n' each).
+query II
+SELECT rows_written, bytes_written
+FROM fixed.main.write_fixed((FROM src ORDER BY id),
+    's3://${FIXEDFORMAT_S3_TEST_BUCKET}/ff_roundtrip.dat', 'name:A4 id:9(3)');
+----
+2	16
+
+# Read it back from s3:// and confirm the round-trip.
+query TI
+SELECT name, id
+FROM fixed.main.read_fixed('s3://${FIXEDFORMAT_S3_TEST_BUCKET}/ff_roundtrip.dat', 'name:A4 id:9(3)')
+ORDER BY id;
+----
+JANE	7
+JOHN	42
+
+# A glob over the bucket prefix also resolves the object via object listing.
+query I
+SELECT count(*)
+FROM fixed.main.read_fixed('s3://${FIXEDFORMAT_S3_TEST_BUCKET}/ff_roundtrip*.dat', 'name:A4 id:9(3)');
+----
+2
+
+statement ok
+DROP SECRET ff_s3;
+
+statement ok
+DETACH fixed;
