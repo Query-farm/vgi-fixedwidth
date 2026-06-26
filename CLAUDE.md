@@ -29,6 +29,42 @@ needed.
   `(rows_written, bytes_written)`.
 - `fixed.main.fixedformat_version()`.
 
+### Cloud paths (S3-compatible + HTTP)
+
+The worker runs outside DuckDB (no `httpfs`), so cloud access goes through
+`object_store` in `crates/fixedformat-worker/src/cloud.rs`. A `path` may be:
+
+- `s3://bucket/key` — AWS S3, and R2 / MinIO / GCS-HMAC via a `TYPE s3` secret
+  with `ENDPOINT`/`URL_STYLE`. Globs (`s3://bucket/data/*.dat`) expand via object
+  listing (list under the literal prefix, then glob-filter). Glob semantics match
+  DuckDB's S3 globbing: `*`/`?`/`[...]` stay within one key segment and only `**`
+  crosses `/` (`cloud::glob_matches` uses `require_literal_separator`); like
+  DuckDB, brace `{a,b}` expansion is not supported. Both `read_fixed` and
+  `write_fixed` support `s3://`.
+- `https://host/file` / `http://…` — **read only** (no listing/glob; the URL is
+  a single object). Writing to `http(s)://` errors.
+- anything without a scheme → local filesystem (unchanged). An unknown scheme
+  (`gs://`, `az://`) is a hard error, not a silent local fallback.
+
+Credentials come from DuckDB's secret manager via the VGI two-phase secret bind:
+both functions declare `secret_lookups()` requesting a `s3` secret **scoped to
+the URL**, and the resolved fields (`key_id`, `secret`, `session_token`,
+`region`, `endpoint`, `url_style`, `use_ssl`) are mapped onto `object_store`
+`aws_*` options. `write_fixed` getting secrets relies on the buffering
+two-phase-bind fix in the local `vgi` SDK (see the path dep in the root
+`Cargo.toml`; **repin to a published vgi before release**). Named overrides
+`endpoint =>` / `region =>` / `url_style =>` / `use_ssl =>` (declared via
+`options::cloud_arg_specs`) win over secret-derived config — handy for MinIO
+without a `CREATE SECRET`. Example:
+
+```sql
+CREATE SECRET (TYPE s3, KEY_ID '…', SECRET '…', REGION 'us-east-1');
+SELECT * FROM fixed.main.read_fixed('s3://bucket/data/*.dat', 'A10 N');
+-- MinIO without a secret:
+SELECT * FROM fixed.main.read_fixed('s3://bucket/x.dat', 'A10 N',
+    endpoint => 'localhost:9000', url_style => 'path', use_ssl => false);
+```
+
 ### Spec formats (auto-detected; override with `format =>`)
 
 - **template** — Perl/Python codes: `A`/`a`/`Z` strings, `c C s S l L i I q Q`

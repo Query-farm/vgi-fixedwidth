@@ -11,6 +11,7 @@
 
 mod arrow_map;
 mod buffering;
+mod cloud;
 mod meta;
 mod options;
 mod scalar;

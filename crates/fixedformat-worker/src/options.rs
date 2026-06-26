@@ -4,10 +4,55 @@
 use fixedformat_core::framing::Framing;
 use fixedformat_core::{parse_spec, Encoding, Layout};
 use vgi::arguments::Arguments;
+use vgi::ArgSpec;
 use vgi_rpc::{Result, RpcError};
 
 fn ve(msg: impl Into<String>) -> RpcError {
     RpcError::value_error(msg.into())
+}
+
+/// Read the path argument at `pos` as one or more paths: a single VARCHAR yields
+/// one path; a `LIST(VARCHAR)` const yields each element (so `read_fixed` accepts
+/// both `'s3://b/x.dat'` and `['s3://b/x.dat','s3://c/y.dat']`). Non-string and
+/// null elements are skipped.
+pub fn paths(args: &Arguments, pos: usize) -> Result<Vec<String>> {
+    use arrow_array::cast::AsArray;
+    use arrow_array::Array;
+    // Single string (the common case).
+    if let Some(s) = args.const_str(pos) {
+        return Ok(vec![s]);
+    }
+    // LIST(VARCHAR): the 1-row positional arg is a list; read its element array.
+    let Some(arr) = args.arg(pos) else {
+        return Err(ve("a path (or list of paths) is required"));
+    };
+    let elems = if let Some(l) = arr.as_list_opt::<i32>() {
+        l.value(0)
+    } else if let Some(l) = arr.as_list_opt::<i64>() {
+        l.value(0)
+    } else {
+        return Err(ve("path must be a VARCHAR or a LIST(VARCHAR)"));
+    };
+    let mut out = Vec::with_capacity(elems.len());
+    if let Some(s) = elems.as_string_opt::<i32>() {
+        for i in 0..s.len() {
+            if s.is_valid(i) {
+                out.push(s.value(i).to_string());
+            }
+        }
+    } else if let Some(s) = elems.as_string_opt::<i64>() {
+        for i in 0..s.len() {
+            if s.is_valid(i) {
+                out.push(s.value(i).to_string());
+            }
+        }
+    } else {
+        return Err(ve("path list elements must be VARCHAR"));
+    }
+    if out.is_empty() {
+        return Err(ve("path list is empty"));
+    }
+    Ok(out)
 }
 
 /// Parse the layout from a const spec argument at `spec_pos`, honoring an
@@ -48,4 +93,70 @@ pub fn framing(args: &Arguments) -> Result<Framing> {
         Some(s) => Framing::parse(&s).map_err(|e| ve(e.to_string())),
         None => Ok(Framing::Newline),
     }
+}
+
+/// Named-argument object-store overrides (`endpoint =>`, `region =>`,
+/// `url_style =>`, `use_ssl =>`) for `s3://` paths, mapped to `object_store`
+/// `aws_*` config keys. These layer over (and win against) any secret-derived
+/// config, letting a caller hit MinIO / a custom endpoint without a `CREATE
+/// SECRET`. Returns an empty vec when none are given.
+pub fn cloud_overrides(args: &Arguments) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    // `use_ssl` is a BOOLEAN arg; fall back to a string form for robustness.
+    let use_ssl = args
+        .named_bool("use_ssl")
+        .or_else(|| args.named_str("use_ssl").and_then(|v| crate::cloud::parse_bool(&v)));
+    if let Some(ep) = args.named_str("endpoint") {
+        out.push((
+            "aws_endpoint".into(),
+            crate::cloud::normalize_endpoint(&ep, use_ssl),
+        ));
+    }
+    if let Some(r) = args.named_str("region") {
+        out.push(("aws_region".into(), r));
+    }
+    if let Some(s) = args.named_str("url_style") {
+        if s.eq_ignore_ascii_case("path") {
+            out.push(("aws_virtual_hosted_style_request".into(), "false".into()));
+        }
+    }
+    if use_ssl == Some(false) {
+        out.push(("aws_allow_http".into(), "true".into()));
+    }
+    out
+}
+
+/// Named argument specs for the object-store overrides, shared by `read_fixed`
+/// and `write_fixed` so both accept `endpoint =>` / `region =>` / `url_style =>`
+/// / `use_ssl =>` (DuckDB's binder drops named args that aren't declared).
+pub fn cloud_arg_specs() -> Vec<ArgSpec> {
+    vec![
+        ArgSpec::const_arg(
+            "endpoint",
+            -1,
+            "varchar",
+            "Custom S3 endpoint for an `s3://` path (e.g. MinIO/R2 'host:9000'); a scheme is \
+             inferred from `use_ssl` when omitted. Overrides any endpoint from a CREATE SECRET.",
+        ),
+        ArgSpec::const_arg(
+            "region",
+            -1,
+            "varchar",
+            "AWS region for an `s3://` path. Overrides the region from a CREATE SECRET.",
+        ),
+        ArgSpec::const_arg(
+            "url_style",
+            -1,
+            "varchar",
+            "S3 addressing for an `s3://` path: 'path' (path-style, e.g. MinIO) or 'vhost' \
+             (the default). Overrides a CREATE SECRET's URL_STYLE.",
+        ),
+        ArgSpec::const_arg(
+            "use_ssl",
+            -1,
+            "boolean",
+            "Whether to use TLS for an `s3://` path's custom endpoint (default true). Set false \
+             for a plain-HTTP endpoint such as a local MinIO.",
+        ),
+    ]
 }

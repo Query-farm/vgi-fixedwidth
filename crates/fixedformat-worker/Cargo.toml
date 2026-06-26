@@ -24,3 +24,11 @@ fixedformat-core.workspace = true
 log = "0.4"
 env_logger = "0.11"
 glob = "0.3"
+# Cloud object-store access for s3:// and http(s):// paths. `object_store` is
+# arrow-independent, so it does not disturb the arrow-59 pin. tokio drives the
+# async object_store calls from the synchronous worker (see src/cloud.rs).
+object_store = { version = "0.12", features = ["aws", "http"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+url = "2"
+futures = "0.3"
+percent-encoding = "2"

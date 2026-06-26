@@ -13,11 +13,13 @@ use fixedformat_core::decode::decode_record;
 use fixedformat_core::framing::{records, Framing};
 use fixedformat_core::{Encoding, Layout, Value};
 use vgi::arguments::Arguments;
+use vgi::secrets::{SecretLookup, Secrets};
 use vgi::table_function::{TableFunction, TableProducer};
 use vgi::{ArgSpec, BindParams, BindResponse, FunctionMetadata, ProcessParams};
 use vgi_rpc::{OutputCollector, Result, RpcError};
 
 use crate::arrow_map::layout_fields;
+use crate::cloud::{self, Location};
 use crate::options;
 
 const BATCH_ROWS: usize = 2048;
@@ -122,9 +124,14 @@ impl TableFunction for ReadFixed {
             ArgSpec::const_arg(
                 "path",
                 0,
-                "varchar",
-                "Path to the fixed-width file to read; may be a glob (e.g. 'data/*.dat') to scan \
-                 several files in sorted order.",
+                "any",
+                "Path(s) to the fixed-width file(s) to read: a single VARCHAR, or a \
+                 LIST(VARCHAR) to read several files in one call (their rows are concatenated in \
+                 order). A path may be a glob (e.g. 'data/*.dat') to scan matching files in sorted \
+                 order, or a cloud URL: 's3://bucket/key' (AWS S3, or R2/MinIO/GCS-HMAC via a \
+                 `CREATE SECRET (TYPE s3, …, ENDPOINT …)`) or 'https://host/file'. Credentials \
+                 come from the matching DuckDB secret, resolved per path scope — so a list \
+                 spanning several buckets picks the right secret for each.",
             ),
             ArgSpec::const_arg(
                 "spec",
@@ -163,16 +170,33 @@ impl TableFunction for ReadFixed {
                  implied by the layout `spec`.",
             ),
         ]
+        .into_iter()
+        .chain(options::cloud_arg_specs())
+        .collect()
+    }
+
+    fn secret_lookups(&self, params: &BindParams) -> Vec<SecretLookup> {
+        // Request the matching DuckDB secret per distinct remote scope — so a
+        // call spanning several s3 buckets resolves the right secret for each.
+        // http(s):// and local paths need none. Best-effort: a malformed path is
+        // surfaced later in on_bind.
+        match options::paths(&params.arguments, 0) {
+            Ok(paths) => cloud::secret_lookups(&paths),
+            Err(_) => Vec::new(),
+        }
     }
 
     fn on_bind(&self, params: &BindParams) -> Result<BindResponse> {
         let layout = options::layout(&params.arguments, 1)?;
-        // Validate the path early (mirrors the native "File not found").
-        let path = params
-            .arguments
-            .const_str(0)
-            .ok_or_else(|| ve("read_fixed: path is required"))?;
-        crate::table::resolve_paths(&path)?;
+        let paths = options::paths(&params.arguments, 0)?;
+        // Validate local paths early (mirrors the native "File not found").
+        // Remote paths are validated lazily at producer time — no network call
+        // (or resolved secrets) is needed just to compute the output schema.
+        for p in &paths {
+            if !cloud::is_remote(p) {
+                crate::table::resolve_local(p)?;
+            }
+        }
         Ok(BindResponse {
             output_schema: output_schema(&layout)?,
             opaque_data: Vec::new(),
@@ -185,13 +209,23 @@ impl TableFunction for ReadFixed {
         let framing = options::framing(&params.arguments)?;
         let rec_len = record_length(&params.arguments, &layout);
 
-        let path = params
-            .arguments
-            .const_str(0)
-            .ok_or_else(|| ve("read_fixed: path is required"))?;
-        let files = crate::table::resolve_paths(&path)?;
+        let paths = options::paths(&params.arguments, 0)?;
+        let overrides = options::cloud_overrides(&params.arguments);
+        // Resolve each path (glob/list) to concrete locations, in order.
+        let mut locations = Vec::new();
+        for p in &paths {
+            locations.extend(crate::table::resolve_locations(p, &params.secrets, &overrides)?);
+        }
 
-        let rows = read_all(&files, &layout, enc, framing, rec_len)?;
+        let rows = read_all(
+            &locations,
+            &layout,
+            enc,
+            framing,
+            rec_len,
+            &params.secrets,
+            &overrides,
+        )?;
         Ok(Box::new(FixedProducer {
             schema: params.output_schema.clone(),
             rows,
@@ -200,17 +234,25 @@ impl TableFunction for ReadFixed {
     }
 }
 
-/// Read and decode every record across `files` into rows of column values.
+/// Read and decode every record across `locations` into rows of column values.
+/// Local locations are read with `std::fs`; remote ones via the object store.
 fn read_all(
-    files: &[String],
+    locations: &[Location],
     layout: &Layout,
     enc: Encoding,
     framing: Framing,
     rec_len: usize,
+    secrets: &Secrets,
+    overrides: &[(String, String)],
 ) -> Result<Vec<Vec<Value>>> {
     let mut rows = Vec::new();
-    for path in files {
-        let data = std::fs::read(path).map_err(|e| ve(format!("read {path}: {e}")))?;
+    for loc in locations {
+        let data = match loc {
+            Location::Local(path) => {
+                std::fs::read(path).map_err(|e| ve(format!("read {path}: {e}")))?
+            }
+            Location::Remote(url) => cloud::read_object(url, secrets, overrides)?,
+        };
         let recs = records(&data, framing, rec_len).map_err(ve)?;
         for rec in recs {
             let pairs = decode_record(layout, rec, enc).map_err(ve)?;

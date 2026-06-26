@@ -15,9 +15,11 @@ use fixedformat_core::{Encoding, Layout, Value};
 use vgi::buffering::{BufferingParams, TableBufferingFunction};
 use vgi::function::{ArgSpec, BindParams, BindResponse, FunctionMetadata};
 use vgi::ipc;
+use vgi::secrets::SecretLookup;
 use vgi::table_function::TableProducer;
 use vgi_rpc::{OutputCollector, Result, RpcError};
 
+use crate::cloud::{self, Location};
 use crate::options;
 use crate::value_in::value_at;
 
@@ -99,7 +101,10 @@ impl TableBufferingFunction for WriteFixed {
                 "path",
                 1,
                 "varchar",
-                "Path of the fixed-width file to create; it is overwritten if it already exists.",
+                "Path of the fixed-width file to create; it is overwritten if it already exists. \
+                 May also be an 's3://bucket/key' URL (AWS S3, or R2/MinIO/GCS-HMAC via a `CREATE \
+                 SECRET (TYPE s3, …, ENDPOINT …)`) — credentials come from the matching DuckDB \
+                 secret, scoped to the URL. Writing to 'http(s)://' is not supported.",
             ),
             ArgSpec::const_arg(
                 "spec",
@@ -130,6 +135,21 @@ impl TableBufferingFunction for WriteFixed {
                  or 'rdw_blocked'.",
             ),
         ]
+        .into_iter()
+        .chain(options::cloud_arg_specs())
+        .collect()
+    }
+
+    fn secret_lookups(&self, params: &BindParams) -> Vec<SecretLookup> {
+        // Request the matching DuckDB secret (scoped to the URL) for remote
+        // destinations that need credentials (s3://). Now honored by the SDK's
+        // two-phase secret bind for buffering functions.
+        params
+            .arguments
+            .const_str(1)
+            .and_then(|p| cloud::secret_lookup(&p))
+            .into_iter()
+            .collect()
     }
 
     fn on_bind(&self, params: &BindParams) -> Result<BindResponse> {
@@ -193,7 +213,15 @@ impl TableBufferingFunction for WriteFixed {
         let body = assemble(&records, framing);
         let rows_written = records.len() as i64;
         let bytes_written = body.len() as i64;
-        std::fs::write(&path, &body).map_err(|e| ve(format!("write {path}: {e}")))?;
+        match cloud::classify(&path)? {
+            Location::Local(p) => {
+                std::fs::write(&p, &body).map_err(|e| ve(format!("write {p}: {e}")))?
+            }
+            Location::Remote(url) => {
+                let overrides = options::cloud_overrides(&params.arguments);
+                cloud::write_object(&url, &params.secrets, &overrides, &body)?
+            }
+        }
 
         let batch = RecordBatch::try_new(
             params.output_schema.clone(),

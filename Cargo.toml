@@ -10,11 +10,13 @@ license = "MIT"
 authors = ["Query Farm LLC <hello@query.farm>"]
 
 [workspace.dependencies]
-# VGI Rust SDK (worker side), published on crates.io. Pulls in vgi-rpc 0.5 and
-# arrow 59 transitively; keep arrow/vgi-rpc here in lockstep with vgi's pins so a
-# single arrow/vgi-rpc resolves.
-vgi = "0.9.2"
-vgi-rpc = { version = "0.5.0", default-features = false, features = ["macros", "http"] }
+# VGI Rust SDK (worker side). Pinned to the LOCAL checkout because it carries the
+# table-buffering two-phase secret-bind fix that write_fixed needs for cloud
+# writes and which is not yet on crates.io. ROLLOUT: repin to a published vgi
+# version (>= the one containing that fix) before releasing this worker.
+# Keep arrow/vgi-rpc in lockstep with vgi's pins so a single arrow/vgi-rpc resolves.
+vgi = { path = "/Users/rusty/Development/vgi-rust/vgi" }
+vgi-rpc = { version = "0.7.0", default-features = false, features = ["macros", "http"] }
 arrow = { version = "59", default-features = false, features = ["ipc"] }
 arrow-array = "59"
 arrow-buffer = "59"

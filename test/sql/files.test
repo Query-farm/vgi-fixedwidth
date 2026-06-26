@@ -60,6 +60,21 @@ FROM fixed.main.read_fixed('data/acct*.dat', 'name:A10 qty:9(5)');
 ----
 3	6
 
+# A LIST(VARCHAR) of paths reads several files in one call (rows concatenated).
+query II
+SELECT count(*), sum(qty)
+FROM fixed.main.read_fixed(['data/acct1.dat', 'data/acct2.dat'], 'name:A10 qty:9(5)');
+----
+3	6
+
+# List concatenates in the given order (acct1's qty=1, then acct2's 2, 3).
+query I
+SELECT qty FROM fixed.main.read_fixed(['data/acct1.dat', 'data/acct2.dat'], 'name:A10 qty:9(5)');
+----
+1
+2
+3
+
 # Large file (5000 records) exercises the multi-batch producer.
 query III
 SELECT count(*), min(id), max(id)
