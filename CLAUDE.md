@@ -28,6 +28,17 @@ needed.
   — write a relation to a fixed-width file (table-buffering sink); returns
   `(rows_written, bytes_written)`.
 - `fixed.main.fixedformat_version()`.
+- `COPY <table> FROM '<path>' (FORMAT 'fixed.fixed', spec '<layout>' [, format, encoding,
+  framing, record_length, endpoint, region, url_style, use_ssl])` — load a fixed-width
+  file straight into a DuckDB table (the COPY-FROM counterpart of `read_fixed`,
+  in `crates/fixedformat-worker/src/copy_from.rs`). The format is **catalog-qualified**
+  (`'<attach-name>.fixed'`, e.g. `'fixed.fixed'`). The output schema is the COPY
+  **target table's** — each decoded column maps to a target column **by position**
+  and is cast to its type (`arrow_cast::cast`), so the spec must produce the same
+  number of columns in the same order. `path` may be local or `s3://`/`http(s)://`
+  (credentials via `CREATE SECRET`, scoped per path — `secret_lookups` is forwarded
+  from the SDK's `CopyFromTable`). COPY options are named (the source path comes from
+  the COPY statement, not an option). `COPY ... TO` is not implemented.
 
 ### Cloud paths (S3-compatible + HTTP)
 

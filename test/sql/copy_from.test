@@ -1,0 +1,38 @@
+# name: test/sql/copy_from.test
+# description: COPY <table> FROM '<path>' (FORMAT 'fixed.fixed', ...) loads a fixed-width
+#              file straight into a DuckDB table. Creates a table in the default
+#              catalog, so it does NOT set search_path (that would target the
+#              read-only worker catalog).
+# group: [sql]
+
+require-env VGI_TEST_WORKER
+
+statement ok
+ATTACH 'fixed' AS fixed (TYPE vgi, LOCATION '${VGI_TEST_WORKER}');
+
+statement ok
+CREATE TABLE accounts (name VARCHAR, qty INTEGER);
+
+# Decoded columns map to the target columns by position; qty (9(5)) is cast to
+# the target INTEGER.
+statement ok
+COPY accounts FROM 'data/accounts.dat' (FORMAT 'fixed.fixed', spec 'name:A10 qty:9(5)');
+
+query TI
+SELECT name, qty FROM accounts ORDER BY qty;
+----
+BOB	7
+JOHN	42
+JANE	100
+
+# Idempotent re-load appends another three rows (COPY inserts, no truncate).
+statement ok
+COPY accounts FROM 'data/accounts.dat' (FORMAT 'fixed.fixed', spec 'name:A10 qty:9(5)');
+
+query I
+SELECT count(*) FROM accounts;
+----
+6
+
+statement ok
+DETACH fixed;

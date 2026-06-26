@@ -12,6 +12,7 @@
 mod arrow_map;
 mod buffering;
 mod cloud;
+mod copy_from;
 mod meta;
 mod options;
 mod scalar;
@@ -282,6 +283,7 @@ fn main() {
     scalar::register(&mut worker);
     table::register(&mut worker);
     buffering::register(&mut worker);
+    copy_from::register(&mut worker);
     worker.set_catalog(catalog_metadata(&catalog_name));
     worker.run();
 }

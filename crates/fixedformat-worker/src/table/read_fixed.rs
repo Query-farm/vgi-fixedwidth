@@ -236,7 +236,8 @@ impl TableFunction for ReadFixed {
 
 /// Read and decode every record across `locations` into rows of column values.
 /// Local locations are read with `std::fs`; remote ones via the object store.
-fn read_all(
+/// Shared with the `COPY ... FROM` reader (`crate::copy_from`).
+pub(crate) fn read_all(
     locations: &[Location],
     layout: &Layout,
     enc: Encoding,
