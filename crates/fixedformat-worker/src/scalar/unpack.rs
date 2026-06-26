@@ -107,7 +107,9 @@ impl ScalarFunction for Unpack {
                  fields but also the sign nibbles of zoned and COMP-3 (packed-decimal) numbers. \
                  The spec is a Perl/Python `unpack` template string, a JSON field list, or a COBOL \
                  copybook (auto-detected), and supports packed/zoned decimals, OCCURS lists (→ \
-                 LIST), groups and REDEFINES (→ STRUCT). The spec is a bind-time constant so the \
+                 LIST), groups and REDEFINES (→ STRUCT). In a template spec, prefix each field \
+                 with a name to set its STRUCT field name, e.g. `'name:A10 qty:9(5)'`; unnamed \
+                 fields become `field_1`, `field_2`, …. The spec is a bind-time constant so the \
                  STRUCT output type is known at plan time. This is the inverse of pack_fixed when \
                  the same encoding is supplied to both.",
                 "Parse a fixed-width record into a STRUCT under an explicit byte encoding, e.g. \
@@ -125,7 +127,9 @@ impl ScalarFunction for Unpack {
                  (use the 3-argument overload to decode EBCDIC). The spec is a Perl/Python \
                  `unpack` template string, a JSON field list, or a COBOL copybook (auto-detected), \
                  and supports packed/zoned decimals, OCCURS lists (→ LIST), groups and REDEFINES \
-                 (→ STRUCT). The spec is a bind-time constant so the STRUCT output type is known \
+                 (→ STRUCT). In a template spec, prefix each field with a name to set its STRUCT \
+                 field name, e.g. `'name:A10 qty:9(5)'`; unnamed fields become `field_1`, \
+                 `field_2`, …. The spec is a bind-time constant so the STRUCT output type is known \
                  at plan time. This is the inverse of pack_fixed.",
                 "Parse a fixed-width ASCII record into a STRUCT, e.g. \
                  `unpack_fixed('JohnDoe ...', 'A8 N')`. The layout spec is a template string, JSON \

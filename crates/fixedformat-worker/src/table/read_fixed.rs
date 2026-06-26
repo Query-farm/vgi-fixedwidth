@@ -54,7 +54,9 @@ impl TableFunction for ReadFixed {
              'fixed', 'rdw', or 'rdw_blocked') and decoded into a row of typed columns according \
              to the layout `spec` — a Perl/Python `unpack` template, a JSON field list, or a COBOL \
              copybook (format auto-detected unless you pass `format =>` 'template' / 'json' / \
-             'copybook'). The named `encoding =>` argument is 'ascii' (default) or 'ebcdic' \
+             'copybook'). In a template spec, prefix each field with a name to set its column \
+             name, e.g. `'name:A10 qty:9(5)'`; unnamed fields become positional `field_1`, \
+             `field_2`, …. The named `encoding =>` argument is 'ascii' (default) or 'ebcdic' \
              (CP037). The named `record_length =>` argument is the per-record length in BYTES; it \
              is only used for 'fixed' framing (back-to-back records of equal length) and defaults \
              to the length implied by the `spec`; it is ignored for the other framings. `format`, \
@@ -77,7 +79,8 @@ impl TableFunction for ReadFixed {
             "vgi.result_columns_md".into(),
             "The returned columns are **dynamic** — they are determined by the layout `spec` \
              argument, one column per top-level field. Column names come from the field names in \
-             the spec, and types follow the field kinds:\n\n\
+             the spec — name your fields (e.g. `name:A10 qty:9(5)`); **unnamed** template fields \
+             become positional `field_1`, `field_2`, … — and types follow the field kinds:\n\n\
              | spec field kind | column type |\n\
              |---|---|\n\
              | text / hex | VARCHAR |\n\

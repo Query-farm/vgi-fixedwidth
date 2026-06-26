@@ -85,6 +85,58 @@ fn catalog_metadata(name: &str) -> CatalogModel {
                  file)."
                     .to_string(),
             ),
+            // Fixed agent-suitability suite run by `vgi-lint simulate` (2 single-call
+            // smoke tests + 2 multi-concept tasks: a multi-file glob aggregate and the
+            // headline EBCDIC/COMP-3 mainframe decode). Each prompt is shown to the
+            // simulated analyst; the hidden reference_sql is the canonical solution,
+            // re-run live to grade by deterministic result comparison. Prompts name
+            // their output columns (grading is strict on names/values/order). The
+            // file-based tasks use repo-relative `data/...` paths, so run `vgi-lint
+            // simulate` from the repo root where the test fixtures live.
+            (
+                "vgi.agent_test_tasks".to_string(),
+                crate::meta::agent_test_tasks_json(&[
+                    (
+                        "unpack_single",
+                        "I have one fixed-width record 'JOHN      00042' where the first 10 \
+                         characters are an account name and the next 5 are a zero-padded quantity. \
+                         Parse it and return the quantity as a single integer column named qty.",
+                        "SELECT (fixed.main.unpack_fixed('JOHN      00042', 'name:A10 qty:9(5)'))\
+                         .qty AS qty",
+                    ),
+                    (
+                        "profile_large",
+                        "The file data/large.dat is a newline-delimited fixed-width feed where each \
+                         record is a single 7-digit zero-padded id. Profile it: return one row with \
+                         a column named records (the record count), a column named min_id, and a \
+                         column named max_id.",
+                        "SELECT count(*) AS records, min(id) AS min_id, max(id) AS max_id \
+                         FROM fixed.main.read_fixed('data/large.dat', 'id:9(7)')",
+                    ),
+                    (
+                        "glob_total",
+                        "A nightly job drops one or more fixed-width account files into data/, \
+                         named acct1.dat, acct2.dat, and so on. Each record is a 10-character \
+                         account name followed by a 5-digit zero-padded quantity. Read all of the \
+                         acct*.dat files at once and return the total quantity across every record \
+                         as a single column named total_qty.",
+                        "SELECT sum(qty) AS total_qty \
+                         FROM fixed.main.read_fixed('data/acct*.dat', 'name:A10 qty:9(5)')",
+                    ),
+                    (
+                        "ebcdic_comp3_max",
+                        "We received a mainframe extract at data/ebcdic_comp3.dat. It is \
+                         EBCDIC-encoded and fixed-length (no line delimiters between records). \
+                         Each record is a 5-byte name (PIC X(5)) followed by a signed \
+                         packed-decimal amount PIC S9(3)V99 COMP-3. Decode the file and return the \
+                         largest amount as a single column named max_amount.",
+                        "SELECT max(AMT) AS max_amount FROM fixed.main.read_fixed(\
+                         'data/ebcdic_comp3.dat', \
+                         '01 R. 05 NM PIC X(5). 05 AMT PIC S9(3)V99 COMP-3.', \
+                         encoding => 'ebcdic', framing => 'fixed')",
+                    ),
+                ]),
+            ),
             ("vgi.author".to_string(), "Query.Farm".to_string()),
             (
                 "vgi.copyright".to_string(),
