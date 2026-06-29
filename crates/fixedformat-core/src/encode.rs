@@ -13,11 +13,35 @@ use crate::{packed, zoned, Encoding, Error, Result};
 
 /// Encode a record from `(name, value)` pairs. The buffer starts at the layout's
 /// static length and grows as needed for `OCCURS … DEPENDING ON` bodies.
+///
+/// **Strict by name at the top level:** every non-pad top-level field must have a
+/// matching input column, so a typo (`qnty` vs `qty`) or a dropped column fails
+/// loudly rather than silently writing a blank/zero field — silent fill corrupts
+/// fixed-width output. A column that is *present* but `NULL` is allowed (an
+/// explicit empty value); only a truly absent field errors. Nested group /
+/// REDEFINES internals stay lenient (overlapping variants need not all be
+/// supplied).
 pub fn encode_record(
     layout: &Layout,
     values: &[(String, Value)],
     enc: Encoding,
 ) -> Result<Vec<u8>> {
+    let missing: Vec<&str> = layout
+        .fields
+        .iter()
+        .filter(|f| !matches!(f.kind, FieldKind::Pad { .. }))
+        .filter(|f| !values.iter().any(|(n, _)| n.eq_ignore_ascii_case(&f.name)))
+        .map(|f| f.name.as_str())
+        .collect();
+    if !missing.is_empty() {
+        let supplied: Vec<&str> = values.iter().map(|(n, _)| n.as_str()).collect();
+        return Err(Error(format!(
+            "no value supplied for field(s) [{}] required by the layout; supplied columns: [{}] \
+             (names must match — check for typos or column order)",
+            missing.join(", "),
+            supplied.join(", ")
+        )));
+    }
     let mut buf = vec![0u8; layout.record_len];
     encode_seq(&layout.fields, 0, &mut buf, values, enc)?;
     Ok(buf)

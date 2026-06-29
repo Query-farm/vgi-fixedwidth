@@ -441,7 +441,9 @@ mod tests {
 
     #[test]
     fn fixed_zero_record_len_is_error() {
-        assert!(RecordStream::new(Cursor::new(vec![1u8, 2, 3]), Framing::Fixed, 0, 1 << 20).is_err());
+        assert!(
+            RecordStream::new(Cursor::new(vec![1u8, 2, 3]), Framing::Fixed, 0, 1 << 20).is_err()
+        );
     }
 
     #[test]

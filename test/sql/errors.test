@@ -27,6 +27,18 @@ SELECT pack_fixed({'name': 'WAYTOOLONG'}, 'name:A3');
 ----
 does not fit
 
+# Packing a struct that is missing a layout field errors (no silent blank fill).
+statement error
+SELECT pack_fixed({'name': 'JOHN'}, 'name:A10 qty:9(5)');
+----
+no value supplied for field
+
+# A mis-named column (typo) is caught the same way.
+statement error
+SELECT pack_fixed({'name': 'JOHN', 'qnty': 42}, 'name:A10 qty:9(5)');
+----
+no value supplied for field
+
 # Missing file.
 statement error
 SELECT * FROM read_fixed('data/does_not_exist.dat', 'name:A10');

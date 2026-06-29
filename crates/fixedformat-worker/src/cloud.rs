@@ -160,14 +160,87 @@ fn runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
-/// Drive a future to completion from synchronous code. Reuses an ambient runtime
-/// (HTTP transport) via `block_in_place`; otherwise uses the owned runtime
-/// (stdio transport). Avoids the "runtime within a runtime" panic either way.
-fn block_on<F: Future>(fut: F) -> F::Output {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => tokio::task::block_in_place(move || handle.block_on(fut)),
+/// Drive a future to completion from synchronous code, whatever ambient runtime
+/// (if any) the host transport set up:
+/// - **multi-thread** ambient runtime (the usual HTTP transport): `block_in_place`
+///   so we don't stall the scheduler.
+/// - **current-thread** ambient runtime: `block_in_place` would *panic* and we
+///   can't nest a `block_on` on this thread, so run the future on a scratch
+///   thread with our owned runtime (`std::thread::scope` keeps borrows valid).
+/// - **no** ambient runtime (stdio transport): our owned runtime.
+fn block_on<F>(fut: F) -> F::Output
+where
+    F: Future + Send,
+    F::Output: Send,
+{
+    use tokio::runtime::{Handle, RuntimeFlavor};
+    match Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(move || handle.block_on(fut))
+        }
+        Ok(_) => std::thread::scope(|s| s.spawn(|| runtime().block_on(fut)).join().unwrap()),
         Err(_) => runtime().block_on(fut),
     }
+}
+
+/// Whether `ip` is on a network the worker should not be tricked into reaching
+/// server-side (the SSRF backstop): loopback, link-local (incl. the
+/// `169.254.169.254` cloud-metadata address), private/ULA, or unspecified.
+fn is_internal_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.octets()[0] == 0
+                // Carrier-grade NAT 100.64.0.0/10.
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                // Unique-local fc00::/7 and link-local fe80::/10 (the
+                // is_unique_local / is_unicast_link_local helpers are unstable).
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+                // IPv4-mapped — unwrap and re-check.
+                || v6.to_ipv4_mapped().map(IpAddr::V4).is_some_and(is_internal_ip)
+        }
+    }
+}
+
+/// Reject a remote `host` (an IP literal or a DNS name) that resolves to an
+/// internal address. Prevents an `http(s)://` read from being aimed at cloud
+/// metadata (`169.254.169.254`), loopback, or RFC-1918 services the SQL user
+/// can't otherwise reach. Set `FIXEDFORMAT_ALLOW_INTERNAL_HOSTS=1` to override
+/// (e.g. a deliberately internal HTTP source).
+fn guard_host(host: &str) -> Result<()> {
+    if std::env::var_os("FIXEDFORMAT_ALLOW_INTERNAL_HOSTS").is_some() {
+        return Ok(());
+    }
+    use std::net::ToSocketAddrs;
+    // IP literal? check directly. Otherwise resolve and reject if ANY address is
+    // internal (a hostname that resolves to a mix is still unsafe).
+    let internal = if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        is_internal_ip(ip)
+    } else {
+        match (host, 0u16).to_socket_addrs() {
+            Ok(addrs) => addrs.map(|s| s.ip()).any(is_internal_ip),
+            // Resolution failure is surfaced later by the actual request; don't
+            // mask it here.
+            Err(_) => false,
+        }
+    };
+    if internal {
+        return Err(ve(format!(
+            "refusing to read from internal host '{host}' (loopback / link-local / private / \
+             cloud-metadata); set FIXEDFORMAT_ALLOW_INTERNAL_HOSTS=1 to override"
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn parse_bool(s: &str) -> Option<bool> {
@@ -202,6 +275,17 @@ pub fn build_store(
     secrets: &Secrets,
     overrides: &[(String, String)],
 ) -> Result<(Box<dyn ObjectStore>, ObjPath)> {
+    // SSRF backstop: an `http(s)://` path is a server-side fetch of whatever host
+    // the URL names, so block internal targets (cloud metadata, loopback,
+    // RFC-1918). `s3://` custom endpoints are NOT guarded here — pointing s3 at a
+    // localhost MinIO is a deliberate, explicit configuration, not an injected
+    // URL — so the common local-MinIO case keeps working.
+    if matches!(url.scheme(), "http" | "https") {
+        if let Some(host) = url.host_str() {
+            guard_host(host)?;
+        }
+    }
+
     let mut opts: Vec<(String, String)> = if secret_type_for(url) == Some("s3") {
         s3_options(secrets, url)
     } else {
@@ -386,6 +470,50 @@ mod tests {
         // Unknown scheme is an error, not a local path.
         assert!(classify("gs://bucket/x.dat").is_err());
         assert!(classify("az://c/x.dat").is_err());
+    }
+
+    #[test]
+    fn internal_ip_classification() {
+        let internal = [
+            "127.0.0.1",
+            "169.254.169.254", // cloud metadata
+            "10.1.2.3",
+            "192.168.0.1",
+            "172.16.5.5",
+            "100.64.0.1", // CGNAT
+            "0.0.0.0",
+            "::1",
+            "fe80::1",
+            "fc00::1",
+            "::ffff:127.0.0.1", // IPv4-mapped loopback
+        ];
+        for ip in internal {
+            assert!(
+                is_internal_ip(ip.parse().unwrap()),
+                "{ip} should be internal"
+            );
+        }
+        for ip in ["8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:2800:220:1::1"] {
+            assert!(
+                !is_internal_ip(ip.parse().unwrap()),
+                "{ip} should be public"
+            );
+        }
+    }
+
+    #[test]
+    fn build_store_blocks_internal_http() {
+        // An http(s) URL aimed at cloud metadata / loopback is refused (SSRF
+        // backstop); a public host is allowed past the guard.
+        let sec = Secrets::default();
+        let err = build_store(
+            &Url::parse("http://169.254.169.254/latest/meta-data/").unwrap(),
+            &sec,
+            &[],
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("internal host"), "got: {err}");
+        assert!(build_store(&Url::parse("http://127.0.0.1:8080/x").unwrap(), &sec, &[]).is_err());
     }
 
     #[test]

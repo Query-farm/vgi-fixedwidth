@@ -123,7 +123,13 @@ fn open_stream(
 ) -> Result<RecordIter> {
     let raw = source.open()?;
     let plain = decompress_reader(raw, compression, limits.max_decompressed_bytes).map_err(ve)?;
-    RecordStream::new(BufReader::new(plain), framing, rec_len, limits.max_record_bytes).map_err(ve)
+    RecordStream::new(
+        BufReader::new(plain),
+        framing,
+        rec_len,
+        limits.max_record_bytes,
+    )
+    .map_err(ve)
 }
 
 /// Build a `RecordBatch` from `rows` (one inner `Vec<Value>` per record, in column

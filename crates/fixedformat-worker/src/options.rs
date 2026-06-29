@@ -119,7 +119,9 @@ pub fn read_limits(args: &Arguments) -> Result<Limits> {
     let mut limits = Limits::default();
     if let Some(n) = args.named_i64("max_decompressed_bytes") {
         if n <= 0 {
-            return Err(ve("max_decompressed_bytes must be a positive number of bytes"));
+            return Err(ve(
+                "max_decompressed_bytes must be a positive number of bytes",
+            ));
         }
         limits.max_decompressed_bytes = n as u64;
     }
