@@ -228,3 +228,45 @@ SELECT s FROM fixed.main.read_fixed('data/_rdwb.dat', 's:A3', framing => 'rdw_bl
 AAA
 BBB
 CCC
+
+# ---------------------------------------------------------------------------
+# Projection pushdown (read_fixed advertises projection_pushdown = true, so the
+# SDK narrows the producer's output_schema to just the requested columns). The
+# producer maps each decoded field to its output column BY NAME, so a
+# subset/reordered projection must land every value under the right column.
+
+# Subset: a single non-first column. (qty is the 2nd field of the spec.)
+query I
+SELECT qty FROM fixed.main.read_fixed('data/accounts.dat', 'name:A10 qty:9(5)')
+ORDER BY qty;
+----
+7
+42
+100
+
+# Reordered subset over a 3-column spec: SELECT c, a (drop b, swap order). A
+# positional transpose would put a's text under c / b's under a; by-name mapping
+# keeps c→numeric and a→its own text.
+query IT
+SELECT c, a FROM fixed.main.read_fixed('data/proj.dat', 'a:A3 b:A3 c:9(3)')
+ORDER BY c;
+----
+12	ABC
+34	GHI
+56	MNO
+
+# Same file, single middle/last column only.
+query I
+SELECT c FROM fixed.main.read_fixed('data/proj.dat', 'a:A3 b:A3 c:9(3)') ORDER BY c;
+----
+12
+34
+56
+
+# SELECT * still returns every column in layout order (identity projection).
+query TTI
+SELECT * FROM fixed.main.read_fixed('data/proj.dat', 'a:A3 b:A3 c:9(3)') ORDER BY a;
+----
+ABC	DEF	12
+GHI	JKL	34
+MNO	PQR	56

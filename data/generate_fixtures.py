@@ -45,6 +45,11 @@ write(
 # ASCII fixed-length, no delimiters: two 15-byte records.
 write("accounts_fb.dat", b"JOHN      00042JANE      00100")
 
+# Three-column ASCII newline file for projection-pushdown tests: a X(3), b X(3),
+# c 9(3). Distinct values per column so a reordered/subset projection
+# (e.g. SELECT c, a) would surface any positional (vs. by-name) mis-mapping.
+write("proj.dat", b"ABCDEF012\nGHIJKL034\nMNOPQR056\n")
+
 # EBCDIC (CP037) name X(5) + COMP-3 S9(3)V99: ACME/+123.45, WIDGE/-67.89.
 ebcdic = b""
 for name, amt in [("ACME", 12345), ("WIDGET", -6789)]:

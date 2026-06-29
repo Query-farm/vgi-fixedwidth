@@ -140,19 +140,34 @@ fn open_stream(
     .map_err(ve)
 }
 
-/// Build a `RecordBatch` from `rows` (one inner `Vec<Value>` per record, in column
-/// order) against `schema`. Takes ownership and transposes row-major → columnar
-/// by **moving** each `Value` exactly once (no per-cell clone). Shared by the
-/// streaming producer and the eager [`read_all`] collector.
-pub(crate) fn build_batch(schema: &SchemaRef, rows: Vec<Vec<Value>>) -> Result<RecordBatch> {
+/// Build a `RecordBatch` from `rows` (one inner `Vec<Value>` per record, holding
+/// the record's **full** decoded fields in layout order) against `schema`.
+///
+/// `projection` maps each output column of `schema` to the index of its decoded
+/// field in the full layout order — so a projected / reordered scan (e.g.
+/// `SELECT c, a`) lands each decoded value under the **right** output column (by
+/// name; see [`StreamingProducer::new`]) and only the projected columns are
+/// materialized into Arrow arrays. With the identity projection (`output_schema`
+/// == the full layout schema) this is the plain row-major → columnar transpose.
+///
+/// Takes ownership and **moves** each projected `Value` exactly once (no per-cell
+/// clone) via `mem::replace` with `Value::Null`.
+pub(crate) fn build_batch(
+    schema: &SchemaRef,
+    projection: &[usize],
+    mut rows: Vec<Vec<Value>>,
+) -> Result<RecordBatch> {
     let ncols = schema.fields().len();
     let mut cols: Vec<Vec<Value>> = (0..ncols).map(|_| Vec::with_capacity(rows.len())).collect();
-    for row in rows {
-        // Drain each row into the per-column accumulators; a short row (fewer
-        // values than columns) is padded with NULL, matching the prior behavior.
-        let mut it = row.into_iter();
-        for col in cols.iter_mut() {
-            col.push(it.next().unwrap_or(Value::Null));
+    for row in &mut rows {
+        for (col, &src) in cols.iter_mut().zip(projection) {
+            // A short row (fewer decoded values than the layout implies) is
+            // padded with NULL, matching the prior behavior.
+            let v = row
+                .get_mut(src)
+                .map(|slot| std::mem::replace(slot, Value::Null))
+                .unwrap_or(Value::Null);
+            col.push(v);
         }
     }
     let mut columns: Vec<ArrayRef> = Vec::with_capacity(ncols);
@@ -201,6 +216,10 @@ pub(crate) fn read_all(
 /// memory is ~one batch (newline / fixed framing) instead of all rows.
 pub(crate) struct StreamingProducer {
     schema: SchemaRef,
+    /// For each output column of `schema`, the index of its field in the full
+    /// decoded record (layout order). Identity unless projection pushdown
+    /// narrowed/reordered `schema`. See [`StreamingProducer::new`].
+    projection: Vec<usize>,
     layout: Layout,
     enc: Encoding,
     framing: Framing,
@@ -218,9 +237,18 @@ pub(crate) struct StreamingProducer {
 
 impl StreamingProducer {
     /// Build a streaming producer over already-resolved `sources`.
+    ///
+    /// `schema` is the (possibly projection-narrowed / reordered) output schema
+    /// the worker must emit; `full_names` is the decode-order name of every
+    /// top-level layout field (what [`decode_record`] yields). Each output
+    /// column is mapped to its decoded field **by name** so a projected scan
+    /// (`SELECT c, a …`) places every value under the right column and skips
+    /// building the unprojected ones. COBOL field names are case-insensitive, so
+    /// matching is ASCII-case-insensitive (consistent with the decode `scope`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         schema: SchemaRef,
+        full_names: &[String],
         layout: Layout,
         enc: Encoding,
         framing: Framing,
@@ -228,9 +256,25 @@ impl StreamingProducer {
         compression: Option<Compression>,
         limits: Limits,
         sources: Vec<Source>,
-    ) -> Self {
-        StreamingProducer {
+    ) -> Result<Self> {
+        let projection = schema
+            .fields()
+            .iter()
+            .map(|f| {
+                full_names
+                    .iter()
+                    .position(|n| n.eq_ignore_ascii_case(f.name()))
+                    .ok_or_else(|| {
+                        ve(format!(
+                            "projected column '{}' is not a field of the layout spec",
+                            f.name()
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(StreamingProducer {
             schema,
+            projection,
             layout,
             enc,
             framing,
@@ -241,7 +285,7 @@ impl StreamingProducer {
             idx: 0,
             seen: 0,
             current: None,
-        }
+        })
     }
 }
 
@@ -288,6 +332,6 @@ impl TableProducer for StreamingProducer {
         if rows.is_empty() {
             return Ok(None);
         }
-        Ok(Some(build_batch(&self.schema, rows)?))
+        Ok(Some(build_batch(&self.schema, &self.projection, rows)?))
     }
 }
