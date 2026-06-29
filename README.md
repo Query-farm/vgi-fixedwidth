@@ -2,7 +2,9 @@
 
 Read and write **fixed-width / flat-file / mainframe** data in DuckDB with SQL —
 the equivalent of Perl `unpack()` / Python `struct`, plus COBOL copybooks
-(COMP-3, zoned decimal, EBCDIC, OCCURS, REDEFINES).
+(COMP-3, zoned decimal, EBCDIC, `OCCURS` / `OCCURS … DEPENDING ON`, `REDEFINES`).
+Nested records become `STRUCT`s, repeating groups become `LIST`s, and
+`describe_fixed` shows you exactly how any spec resolves before you run it.
 
 It runs as a [VGI worker](https://query.farm): a small standalone binary that
 DuckDB launches and talks to over Apache Arrow. You `ATTACH` it and call its
@@ -39,7 +41,7 @@ directory).
 
 ---
 
-## The four functions
+## The functions
 
 | Function | Shape | What it does |
 |----------|-------|--------------|
@@ -47,6 +49,7 @@ directory).
 | `pack_fixed(struct, spec [, encoding])` | scalar → BLOB | Format a struct back into a fixed-width record |
 | `read_fixed(path, spec [, options…])` | table function | Read a whole fixed-width file into rows |
 | `write_fixed((FROM rel), path, spec [, options…])` | table function | Write a relation out to a fixed-width file |
+| `describe_fixed(spec [, format =>])` | table function | Introspect a spec (fields, types, offsets) without reading data |
 
 `pack_fixed` is the exact inverse of `unpack_fixed`:
 `pack_fixed(unpack_fixed(rec, s), s) = rec`.
@@ -94,6 +97,24 @@ input relation as a subquery `(FROM …)`:
 SELECT * FROM write_fixed((FROM my_table), '/tmp/out.dat', 'name:A10 qty:9(5)');
 -- returns one row: (rows_written, bytes_written)
 ```
+
+### `describe_fixed` — introspect a spec
+
+See exactly how a spec resolves — one row per field — **without reading any
+data**. Great for debugging offsets or documenting a layout:
+
+```sql
+SELECT path, sql_type, byte_offset, width, occurs
+FROM describe_fixed('name:A10 qty:9(5) vals:s(3)');
+-- name  VARCHAR   0  10  NULL
+-- qty   BIGINT   10   5  NULL
+-- vals  BIGINT[] 15   2     3
+```
+
+Columns: `path` (dotted, e.g. `item.sku`), `depth`, `kind` (codec label),
+`sql_type` (the DuckDB column type), `byte_offset`, `width`, `occurs`
+(OCCURS maximum, else NULL), and `depending_on` (the `OCCURS … DEPENDING ON`
+controller, else NULL).
 
 ---
 
@@ -181,6 +202,21 @@ Types: `str`, `int`, `decimal`, `comp3`/`packed`, `zoned`, `binary`/`comp`,
 `scale`, `signed`, `endian` (`big`/`little`), `occurs`, `justify` (`left`/`right`),
 `pad`, `sign` (`leading`/`trailing`/`embedded`).
 
+A field may instead carry a nested `fields` array, making it a **group**
+(`STRUCT`; its `type` is then optional). Combined with `occurs` a group becomes a
+`LIST` of `STRUCT`, so nested and repeating sub-records are expressible without a
+COBOL copybook:
+
+```json
+[
+  {"name": "hdr",   "type": "str", "width": 4},
+  {"name": "lines", "occurs": 3, "fields": [
+    {"name": "sku", "type": "str", "width": 3},
+    {"name": "qty", "type": "int", "digits": 2}
+  ]}
+]
+```
+
 ### 3. COBOL copybook
 
 Real copybook text — paste it straight in.
@@ -199,6 +235,10 @@ Real copybook text — paste it straight in.
 
 - Group items → `STRUCT` columns.
 - `OCCURS n` → `LIST` (`UNNEST` it to get rows).
+- `OCCURS [m TO] n DEPENDING ON ctrl` → a **variable-length** `LIST` whose length
+  is the runtime value of the `ctrl` field (which must appear before the table).
+  Records then vary in length, so the file must be `newline`- or `rdw`-framed
+  (not `fixed`).
 - `REDEFINES` → a `STRUCT` holding every overlapping interpretation of the same
   bytes (named after the base field).
 - `USAGE COMP-3`/`PACKED-DECIMAL`, `COMP`/`COMP-4`/`COMP-5`/`BINARY`, and
@@ -216,8 +256,8 @@ Real copybook text — paste it straight in.
 | float32 / float16 | `REAL` |
 | float64 | `DOUBLE` |
 | boolean | `BOOLEAN` |
-| OCCURS | `LIST` of the above |
-| group / REDEFINES | `STRUCT` |
+| OCCURS / OCCURS DEPENDING ON | `LIST` of the above (variable-length for DEPENDING ON) |
+| group / nested `fields` / REDEFINES | `STRUCT` |
 
 ## Encodings & framing
 
@@ -253,6 +293,36 @@ COPY (
 SELECT r.acct_id, h.idx, h.val
 FROM read_fixed('f.dat', '01 R. 05 ACCT-ID PIC X(10). 05 H OCCURS 3 PIC 9(4).') r,
      UNNEST(r.H) WITH ORDINALITY AS h(val, idx);
+```
+
+**Read variable-length records (`OCCURS … DEPENDING ON`):** the table length is
+driven by an earlier count field, so the records vary in length — frame them with
+`newline` (or `rdw`), not `fixed`:
+```sql
+SELECT N, ITEMS, TRAILER
+FROM read_fixed('orders.dat',
+  '01 R. 05 N PIC 9(1).
+         05 ITEMS OCCURS 1 TO 9 TIMES DEPENDING ON N PIC X(2).
+         05 TRAILER PIC X(3).',
+  framing => 'newline');
+```
+
+**Debug a spec before running it** — see every field's type, byte offset, and
+width without touching a file:
+```sql
+SELECT * FROM describe_fixed('01 R. 05 NM PIC X(20). 05 BAL PIC S9(7)V99 COMP-3.');
+-- NM   …  VARCHAR        offset 0  width 20
+-- BAL  …  DECIMAL(9,2)   offset 20 width 5
+```
+
+**Express nested / repeating records without COBOL** — give a JSON field a nested
+`fields` array (a `STRUCT`), optionally with `occurs` (a `LIST` of `STRUCT`):
+```sql
+SELECT * FROM read_fixed('recs.dat',
+  '[{"name":"hdr","type":"str","width":4},
+    {"name":"lines","occurs":3,"fields":[
+       {"name":"sku","type":"str","width":3},
+       {"name":"qty","type":"int","digits":2}]}]');
 ```
 
 **Round-trip / reformat a file** (read with one spec, write with another):
@@ -292,11 +362,12 @@ cargo clippy --all-targets
 python3 data/generate_fixtures.py  # regenerate test fixtures
 ```
 
-Coverage: ~70 `fixedformat-core` unit tests, a `proptest` suite proving
-`decode(encode(v)) == v` across every field kind (ASCII + EBCDIC), and 9 SQLLogic
-files (120+ assertions) covering every function, spec format, framing mode, NULL
-handling, and malformed-input behavior. Binary decoding is cross-checked against
-Python `struct.pack` reference bytes.
+Coverage: 73 `fixedformat-core` unit tests, a `proptest` suite proving
+`decode(encode(v)) == v` across every field kind (ASCII + EBCDIC), and 13 SQLLogic
+files (230+ assertions) covering every function, spec format, framing mode, nested
+and variable-length (`OCCURS … DEPENDING ON`) records, NULL handling, and
+malformed-input behavior. Binary decoding is cross-checked against Python
+`struct.pack` reference bytes.
 
 The end-to-end suite (`test/sql/*.test`) runs against the built worker through
 the haybarn DuckDB unittest runner. One-time setup:

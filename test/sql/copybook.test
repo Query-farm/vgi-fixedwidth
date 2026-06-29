@@ -56,3 +56,59 @@ query I
 SELECT unpack_fixed('\x00\x00\x00\x07'::BLOB, '01 R. 05 N PIC S9(9) COMP.').N;
 ----
 7
+
+# JSON nested group -> STRUCT, without a COBOL copybook.
+query T
+SELECT unpack_fixed('HEADABC07', '[{"name":"hdr","type":"str","width":4},{"name":"item","fields":[{"name":"sku","type":"str","width":3},{"name":"qty","type":"int","digits":2}]}]').item.sku;
+----
+ABC
+
+query I
+SELECT unpack_fixed('HEADABC07', '[{"name":"hdr","type":"str","width":4},{"name":"item","fields":[{"name":"sku","type":"str","width":3},{"name":"qty","type":"int","digits":2}]}]').item.qty;
+----
+7
+
+# JSON group + occurs -> LIST of STRUCT (1-based indexing in DuckDB).
+query T
+SELECT unpack_fixed('AB1CD2', '[{"name":"lines","occurs":2,"fields":[{"name":"a","type":"str","width":2},{"name":"b","type":"int","digits":1}]}]').lines[2].a;
+----
+CD
+
+# Full round-trip through the Arrow path: pack(unpack(rec)) == rec for a spec
+# mixing a nested group and an array-of-structs.
+query T
+SELECT pack_fixed(unpack_fixed('HEADABC07AB1CD2', '[{"name":"hdr","type":"str","width":4},{"name":"item","fields":[{"name":"sku","type":"str","width":3},{"name":"qty","type":"int","digits":2}]},{"name":"lines","occurs":2,"fields":[{"name":"a","type":"str","width":2},{"name":"b","type":"int","digits":1}]}]'), '[{"name":"hdr","type":"str","width":4},{"name":"item","fields":[{"name":"sku","type":"str","width":3},{"name":"qty","type":"int","digits":2}]},{"name":"lines","occurs":2,"fields":[{"name":"a","type":"str","width":2},{"name":"b","type":"int","digits":1}]}]') = 'HEADABC07AB1CD2'::BLOB;
+----
+true
+
+# OCCURS … DEPENDING ON: a variable-length table whose length is driven by an
+# earlier count field. The trailer after the table shifts with the table size.
+query I
+SELECT unpack_fixed('2AABBEND', '01 R. 05 N PIC 9(1). 05 ITEMS OCCURS 1 TO 9 TIMES DEPENDING ON N PIC X(2). 05 TRAILER PIC X(3).').N;
+----
+2
+
+query I
+SELECT len(unpack_fixed('2AABBEND', '01 R. 05 N PIC 9(1). 05 ITEMS OCCURS 1 TO 9 TIMES DEPENDING ON N PIC X(2). 05 TRAILER PIC X(3).').ITEMS);
+----
+2
+
+query T
+SELECT unpack_fixed('2AABBEND', '01 R. 05 N PIC 9(1). 05 ITEMS OCCURS 1 TO 9 TIMES DEPENDING ON N PIC X(2). 05 TRAILER PIC X(3).').ITEMS[2];
+----
+BB
+
+# The trailer is positioned after the (variable) table body.
+query T
+SELECT unpack_fixed('2AABBEND', '01 R. 05 N PIC 9(1). 05 ITEMS OCCURS 1 TO 9 TIMES DEPENDING ON N PIC X(2). 05 TRAILER PIC X(3).').TRAILER;
+----
+END
+
+# Round-trip three different table lengths (including an empty table, N=0).
+query TTT
+SELECT
+  pack_fixed(unpack_fixed('3ABCDEFEND', '01 R. 05 N PIC 9(1). 05 ITEMS OCCURS 1 TO 9 TIMES DEPENDING ON N PIC X(2). 05 TRAILER PIC X(3).'), '01 R. 05 N PIC 9(1). 05 ITEMS OCCURS 1 TO 9 TIMES DEPENDING ON N PIC X(2). 05 TRAILER PIC X(3).')::VARCHAR,
+  pack_fixed(unpack_fixed('1XYEND', '01 R. 05 N PIC 9(1). 05 ITEMS OCCURS 1 TO 9 TIMES DEPENDING ON N PIC X(2). 05 TRAILER PIC X(3).'), '01 R. 05 N PIC 9(1). 05 ITEMS OCCURS 1 TO 9 TIMES DEPENDING ON N PIC X(2). 05 TRAILER PIC X(3).')::VARCHAR,
+  pack_fixed(unpack_fixed('0ZZZ', '01 R. 05 N PIC 9(1). 05 ITEMS OCCURS 1 TO 9 TIMES DEPENDING ON N PIC X(2). 05 TRAILER PIC X(3).'), '01 R. 05 N PIC 9(1). 05 ITEMS OCCURS 1 TO 9 TIMES DEPENDING ON N PIC X(2). 05 TRAILER PIC X(3).')::VARCHAR;
+----
+3ABCDEFEND	1XYEND	0ZZZ

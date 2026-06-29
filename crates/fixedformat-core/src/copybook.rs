@@ -44,6 +44,8 @@ struct Raw {
     pic: Option<String>,
     usage: Usage,
     occurs: Option<usize>,
+    /// `OCCURS … DEPENDING ON name` — the controlling field's name.
+    depending_on: Option<String>,
     redefines: Option<String>,
     sign: Option<SignKind>,
     children: Vec<Raw>,
@@ -95,6 +97,7 @@ fn parse_stmt(toks: &[String]) -> Result<Option<Raw>> {
     let mut pic = None;
     let mut usage = Usage::Display;
     let mut occurs = None;
+    let mut depending_on = None;
     let mut redefines = None;
     let mut sign: Option<SignKind> = None;
 
@@ -116,12 +119,40 @@ fn parse_stmt(toks: &[String]) -> Result<Option<Raw>> {
                 i += 2;
             }
             "OCCURS" => {
-                let n = toks
-                    .get(i + 1)
+                // OCCURS integer-1 [TO integer-2] [TIMES] [DEPENDING ON name].
+                // The element count used for the LIST/static reservation is the
+                // maximum (integer-2 if a range is given, else integer-1).
+                let mut j = i + 1;
+                let first = toks
+                    .get(j)
                     .and_then(|t| t.parse::<usize>().ok())
                     .ok_or_else(|| Error("OCCURS requires a count".into()))?;
-                occurs = Some(n);
-                i += 2;
+                j += 1;
+                let mut max = first;
+                if upper.get(j).map(|s| s == "TO").unwrap_or(false) {
+                    max = toks
+                        .get(j + 1)
+                        .and_then(|t| t.parse::<usize>().ok())
+                        .ok_or_else(|| Error("OCCURS … TO requires an upper bound".into()))?;
+                    j += 2;
+                }
+                if upper.get(j).map(|s| s == "TIMES").unwrap_or(false) {
+                    j += 1;
+                }
+                if upper.get(j).map(|s| s == "DEPENDING").unwrap_or(false) {
+                    j += 1;
+                    if upper.get(j).map(|s| s == "ON").unwrap_or(false) {
+                        j += 1;
+                    }
+                    let ctrl = toks
+                        .get(j)
+                        .cloned()
+                        .ok_or_else(|| Error("DEPENDING ON requires a field name".into()))?;
+                    depending_on = Some(ctrl);
+                    j += 1;
+                }
+                occurs = Some(max);
+                i = j;
             }
             "USAGE" => {
                 i += 1; // "USAGE" optionally followed by "IS"
@@ -171,6 +202,7 @@ fn parse_stmt(toks: &[String]) -> Result<Option<Raw>> {
         pic,
         usage,
         occurs,
+        depending_on,
         redefines,
         sign,
         children: Vec::new(),
@@ -254,13 +286,18 @@ fn layout_nodes(nodes: &[Raw]) -> Result<(Vec<Field>, usize)> {
             width,
             kind,
             occurs: node.occurs,
+            depending_on: node.depending_on.clone(),
             redefines: node.redefines.clone(),
         });
 
+        // An `OCCURS … DEPENDING ON` table reserves no static footprint (the body
+        // is positioned dynamically), so following siblings start right after the
+        // table's offset; a fixed table advances by its full width.
+        let reserved = if node.depending_on.is_some() { 0 } else { total };
         if node.redefines.is_none() {
-            cursor = offset + total;
+            cursor = offset + reserved;
         }
-        max_end = max_end.max(offset + total);
+        max_end = max_end.max(offset + reserved);
     }
 
     Ok((fold_redefines(fields), max_end))
@@ -301,6 +338,7 @@ fn fold_redefines(fields: Vec<Field>) -> Vec<Field> {
                         width,
                         kind: FieldKind::Group(members),
                         occurs: None,
+                        depending_on: None,
                         redefines: None,
                     };
                 } else {
@@ -630,6 +668,64 @@ mod tests {
                 assert_eq!(children[1].offset, 0);
             }
             _ => panic!("expected folded group"),
+        }
+    }
+
+    #[test]
+    fn occurs_depending_on_parses() {
+        let src = "01 REC.
+          05 N PIC 9(2).
+          05 ITEMS OCCURS 1 TO 5 TIMES DEPENDING ON N PIC X(3).";
+        let layout = parse(src).unwrap();
+        assert!(layout.variable);
+        // The table reserves no static footprint — record_len is the minimum
+        // (just the count field) before any ODO body.
+        assert_eq!(layout.record_len, 2);
+        let items = &layout.fields[1];
+        assert_eq!(items.occurs, Some(5)); // declared maximum
+        assert_eq!(items.depending_on.as_deref(), Some("N"));
+    }
+
+    #[test]
+    fn occurs_depending_on_decodes_variable_length() {
+        use crate::decode::decode_record;
+        use crate::value::Value;
+        use crate::Encoding;
+        let src = "01 REC.
+          05 N PIC 9(1).
+          05 ITEMS OCCURS 1 TO 9 TIMES DEPENDING ON N PIC X(2).
+          05 TRAILER PIC X(3).";
+        let layout = parse(src).unwrap();
+
+        // N=2 → two 2-byte items, then the trailer shifts to follow them.
+        let out = decode_record(&layout, b"2AABBEND", Encoding::Ascii).unwrap();
+        assert_eq!(out[0].1, Value::Int(2));
+        assert_eq!(
+            out[1].1,
+            Value::List(vec![Value::Text("AA".into()), Value::Text("BB".into())])
+        );
+        assert_eq!(out[2].1, Value::Text("END".into()));
+
+        // N=0 → empty table; the trailer immediately follows the count.
+        let out = decode_record(&layout, b"0ZZZ", Encoding::Ascii).unwrap();
+        assert_eq!(out[1].1, Value::List(vec![]));
+        assert_eq!(out[2].1, Value::Text("ZZZ".into()));
+    }
+
+    #[test]
+    fn occurs_depending_on_round_trips() {
+        use crate::decode::decode_record;
+        use crate::encode::encode_record;
+        use crate::Encoding;
+        let src = "01 REC.
+          05 N PIC 9(1).
+          05 ITEMS OCCURS 1 TO 9 TIMES DEPENDING ON N PIC X(2).
+          05 TRAILER PIC X(3).";
+        let layout = parse(src).unwrap();
+        for rec in [&b"3ABCDEFEND"[..], &b"1XYEND"[..], &b"0END"[..]] {
+            let decoded = decode_record(&layout, rec, Encoding::Ascii).unwrap();
+            let reenc = encode_record(&layout, &decoded, Encoding::Ascii).unwrap();
+            assert_eq!(reenc, rec, "round-trip failed for {rec:?}");
         }
     }
 }

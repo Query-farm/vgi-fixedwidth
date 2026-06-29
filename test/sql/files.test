@@ -53,6 +53,27 @@ AAA
 BBB
 CCC
 
+# OCCURS … DEPENDING ON: variable-length records, newline-framed. Three records
+# with table lengths 2, 1, 0; the trailer shifts with each table's size.
+query ITT
+SELECT N, len(ITEMS), TRAILER
+FROM fixed.main.read_fixed('data/odo.dat',
+    '01 R. 05 N PIC 9(1). 05 ITEMS OCCURS 1 TO 9 TIMES DEPENDING ON N PIC X(2). 05 TRAILER PIC X(3).')
+ORDER BY N DESC;
+----
+2	2	END
+1	1	END
+0	0	ZZZ
+
+# A variable-length (ODO) layout cannot use 'fixed' framing — records have no
+# constant length, so the reader rejects it.
+statement error
+SELECT * FROM fixed.main.read_fixed('data/odo.dat',
+    '01 R. 05 N PIC 9(1). 05 ITEMS OCCURS 1 TO 9 TIMES DEPENDING ON N PIC X(2). 05 TRAILER PIC X(3).',
+    framing => 'fixed');
+----
+DEPENDING ON
+
 # Glob expands to multiple files (acct1.dat + acct2.dat).
 query II
 SELECT count(*), sum(qty)

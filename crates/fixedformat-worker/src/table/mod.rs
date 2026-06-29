@@ -1,5 +1,6 @@
 //! Table functions exposed by the fixedformat worker.
 
+mod describe_fixed;
 mod read_fixed;
 
 pub(crate) use read_fixed::read_all;
@@ -13,6 +14,7 @@ use crate::cloud::{self, Location};
 /// Register every table function on the worker.
 pub fn register(worker: &mut Worker) {
     worker.register_table(read_fixed::ReadFixed);
+    worker.register_table(describe_fixed::DescribeFixed);
 }
 
 /// Resolve a local path spec to a concrete, sorted list of files (globs expand;

@@ -1,0 +1,50 @@
+# name: test/sql/describe.test
+# description: describe_fixed — introspect a layout spec (fields, types, offsets)
+#              without reading data, across template / JSON / copybook + ODO.
+# group: [sql]
+
+require-env VGI_TEST_WORKER
+
+statement ok
+ATTACH 'fixed' AS fixed (TYPE vgi, LOCATION '${VGI_TEST_WORKER}');
+
+statement ok
+SET search_path='fixed.main';
+
+# Flat template: path, sql_type, byte_offset, width per field.
+query TTII
+SELECT path, sql_type, byte_offset, width
+FROM describe_fixed('name:A10 qty:9(5) amt:l<')
+ORDER BY byte_offset;
+----
+name	VARCHAR	0	10
+qty	BIGINT	10	5
+amt	BIGINT	15	4
+
+# Row count = number of described fields (pads excluded).
+query I
+SELECT count(*) FROM describe_fixed('a:A2 x(3) b:A2');
+----
+2
+
+# JSON nested group: the group row plus its children, with dotted paths and a
+# STRUCT[] type for the repeated group.
+query TTII
+SELECT path, sql_type, byte_offset, depth
+FROM describe_fixed('[{"name":"hdr","type":"str","width":4},{"name":"item","occurs":2,"fields":[{"name":"sku","type":"str","width":3},{"name":"amt","type":"comp3","digits":5,"scale":2,"signed":true}]}]')
+ORDER BY byte_offset, depth;
+----
+hdr	VARCHAR	0	0
+item	STRUCT[]	4	0
+item.sku	VARCHAR	4	1
+item.amt	DECIMAL(5,2)	7	1
+
+# Copybook OCCURS DEPENDING ON: the table reports its maximum occurs and the
+# controlling field name.
+query TIT
+SELECT path, occurs, depending_on
+FROM describe_fixed('01 R. 05 N PIC 9(2). 05 ITEMS OCCURS 1 TO 5 TIMES DEPENDING ON N PIC X(3).')
+ORDER BY byte_offset;
+----
+N	NULL	NULL
+ITEMS	5	N

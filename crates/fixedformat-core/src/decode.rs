@@ -5,54 +5,128 @@
 //! group occurrence. OCCURS fields decode into a [`Value::List`]; group items
 //! decode into a [`Value::Struct`]. [`crate::encode`] is the exact inverse.
 
+use std::collections::HashMap;
+
 use crate::ebcdic;
 use crate::layout::{Endian, Field, FieldKind, Justify, Layout, NumRepr, SignKind};
 use crate::value::Value;
 use crate::{packed, zoned, Encoding, Error, Result};
 
+/// Decoded integer values keyed by UPPERCASE field name, used to resolve
+/// `OCCURS … DEPENDING ON` controlling fields (which decode earlier).
+type Scope = HashMap<String, i64>;
+
 /// Decode all top-level fields of a record into `(name, value)` pairs. Pad
 /// fields are consumed but omitted from the output.
 pub fn decode_record(layout: &Layout, bytes: &[u8], enc: Encoding) -> Result<Vec<(String, Value)>> {
     layout.check_record_len(bytes.len())?;
-    let mut out = Vec::with_capacity(layout.fields.len());
-    for field in &layout.fields {
+    let mut scope = Scope::new();
+    let (pairs, _consumed) = decode_seq(&layout.fields, 0, bytes, enc, &mut scope)?;
+    Ok(pairs)
+}
+
+/// Decode a sibling field list positioned relative to `base`, returning the
+/// non-pad `(name, value)` pairs and the bytes consumed past `base`.
+///
+/// Addressing is `base + field.offset + shift`, where `shift` accumulates the
+/// body size of any `OCCURS … DEPENDING ON` table (which reserves no static
+/// footprint) so following siblings land after it. REDEFINES variants share an
+/// offset and thus overlap naturally; the consumed width is the furthest field
+/// end, which is the max for an overlapping union and the sum for a sequence.
+fn decode_seq(
+    fields: &[Field],
+    base: usize,
+    bytes: &[u8],
+    enc: Encoding,
+    scope: &mut Scope,
+) -> Result<(Vec<(String, Value)>, usize)> {
+    let mut out = Vec::with_capacity(fields.len());
+    let mut shift = 0usize;
+    let mut end = base;
+    for field in fields {
+        let at = base + field.offset + shift;
+        let (value, consumed) = decode_field(field, at, bytes, enc, scope)?;
+        shift += consumed.saturating_sub(field.reserved_width());
+        end = end.max(at + consumed);
         if matches!(field.kind, FieldKind::Pad { .. }) {
             continue;
         }
-        out.push((field.name.clone(), decode_field(field, 0, bytes, enc)?));
+        // Record scalar integers so a later OCCURS … DEPENDING ON can find its
+        // controlling field by name (COBOL names are case-insensitive).
+        if let Value::Int(n) = value {
+            scope.insert(field.name.to_ascii_uppercase(), n);
+        }
+        out.push((field.name.clone(), value));
     }
-    Ok(out)
+    Ok((out, end - base))
 }
 
-/// Decode a single field (handling OCCURS) at `base` (parent-relative origin).
-fn decode_field(field: &Field, base: usize, bytes: &[u8], enc: Encoding) -> Result<Value> {
-    match field.occurs {
-        None => decode_one(field, base + field.offset, bytes, enc),
+/// Decode a single field (handling OCCURS / OCCURS DEPENDING ON) at absolute
+/// `at`, returning its value and the bytes it consumed.
+fn decode_field(
+    field: &Field,
+    at: usize,
+    bytes: &[u8],
+    enc: Encoding,
+    scope: &mut Scope,
+) -> Result<(Value, usize)> {
+    // The element count: a runtime value for OCCURS DEPENDING ON, else the fixed
+    // OCCURS count, else a single (non-list) occurrence.
+    let count = match &field.depending_on {
+        Some(ctrl) => {
+            let n = *scope.get(&ctrl.to_ascii_uppercase()).ok_or_else(|| {
+                Error(format!(
+                    "OCCURS DEPENDING ON {ctrl}: controlling field not decoded before the table"
+                ))
+            })?;
+            if n < 0 {
+                return Err(Error(format!(
+                    "OCCURS DEPENDING ON {ctrl}: negative count {n}"
+                )));
+            }
+            if let Some(max) = field.occurs {
+                if n as usize > max {
+                    return Err(Error(format!(
+                        "OCCURS DEPENDING ON {ctrl}: count {n} exceeds maximum {max}"
+                    )));
+                }
+            }
+            Some(n as usize)
+        }
+        None => field.occurs,
+    };
+
+    match count {
+        None => decode_one(field, at, bytes, enc, scope),
         Some(n) => {
             let mut items = Vec::with_capacity(n);
-            for i in 0..n {
-                let at = base + field.offset + i * field.width;
-                items.push(decode_one(field, at, bytes, enc)?);
+            let mut cursor = at;
+            for _ in 0..n {
+                let (v, consumed) = decode_one(field, cursor, bytes, enc, scope)?;
+                cursor += consumed;
+                items.push(v);
             }
-            Ok(Value::List(items))
+            Ok((Value::List(items), cursor - at))
         }
     }
 }
 
-/// Decode one occurrence of `field` whose bytes start at absolute `at`.
-fn decode_one(field: &Field, at: usize, bytes: &[u8], enc: Encoding) -> Result<Value> {
+/// Decode one occurrence of `field` whose bytes start at absolute `at`,
+/// returning its value and the bytes it consumed.
+fn decode_one(
+    field: &Field,
+    at: usize,
+    bytes: &[u8],
+    enc: Encoding,
+    scope: &mut Scope,
+) -> Result<(Value, usize)> {
+    if let FieldKind::Group(children) = &field.kind {
+        let (pairs, consumed) = decode_seq(children, at, bytes, enc, scope)?;
+        return Ok((Value::Struct(pairs), consumed));
+    }
     let slice = slice(bytes, at, field.width)?;
-    match &field.kind {
-        FieldKind::Group(children) => {
-            let mut fields = Vec::with_capacity(children.len());
-            for child in children {
-                if matches!(child.kind, FieldKind::Pad { .. }) {
-                    continue;
-                }
-                fields.push((child.name.clone(), decode_field(child, at, bytes, enc)?));
-            }
-            Ok(Value::Struct(fields))
-        }
+    let value = match &field.kind {
+        FieldKind::Group(_) => unreachable!("handled above"),
         FieldKind::Text { justify, trim, pad } => {
             let ascii = to_ascii(slice, enc);
             let s = String::from_utf8_lossy(&ascii);
@@ -61,19 +135,17 @@ fn decode_one(field: &Field, at: usize, bytes: &[u8], enc: Encoding) -> Result<V
             } else {
                 s.into_owned()
             };
-            Ok(Value::Text(trimmed))
+            Value::Text(trimmed)
         }
         FieldKind::Int { signed, sign } => {
             let ascii = to_ascii(slice, enc);
-            Ok(Value::Int(parse_display_int(&ascii, *signed, *sign)?))
+            Value::Int(parse_display_int(&ascii, *signed, *sign)?)
         }
-        FieldKind::Binary { endian, signed } => {
-            Ok(Value::Int(parse_binary_int(slice, *endian, *signed)?))
-        }
-        FieldKind::Float { bits, endian } => Ok(Value::Float(parse_float(slice, *bits, *endian)?)),
-        FieldKind::Hex { order } => Ok(Value::Text(to_hex(slice, *order))),
-        FieldKind::Bool => Ok(Value::Bool(slice.iter().any(|&b| b != 0 && b != b'0'))),
-        FieldKind::Pad { .. } => Ok(Value::Null),
+        FieldKind::Binary { endian, signed } => Value::Int(parse_binary_int(slice, *endian, *signed)?),
+        FieldKind::Float { bits, endian } => Value::Float(parse_float(slice, *bits, *endian)?),
+        FieldKind::Hex { order } => Value::Text(to_hex(slice, *order)),
+        FieldKind::Bool => Value::Bool(slice.iter().any(|&b| b != 0 && b != b'0')),
+        FieldKind::Pad { .. } => Value::Null,
         FieldKind::Decimal {
             precision: _,
             scale,
@@ -85,12 +157,13 @@ fn decode_one(field: &Field, at: usize, bytes: &[u8], enc: Encoding) -> Result<V
                 NumRepr::Zoned => zoned::decode(&to_ascii(slice, enc))?,
                 NumRepr::Display => parse_display_decimal(&to_ascii(slice, enc), *sign)?,
             };
-            Ok(Value::Decimal {
+            Value::Decimal {
                 unscaled,
                 scale: *scale,
-            })
+            }
         }
-    }
+    };
+    Ok((value, field.width))
 }
 
 fn slice(bytes: &[u8], at: usize, width: usize) -> Result<&[u8]> {
@@ -290,6 +363,7 @@ mod tests {
                 pad: b' ',
             },
             occurs: None,
+            depending_on: None,
             redefines: None,
         }
     }
@@ -307,6 +381,7 @@ mod tests {
                     sign: SignKind::Unsigned,
                 },
                 occurs: None,
+                depending_on: None,
                 redefines: None,
             },
         ])
@@ -366,6 +441,7 @@ mod tests {
                 sign: SignKind::Embedded,
             },
             occurs: None,
+            depending_on: None,
             redefines: None,
         }])
         .unwrap();
@@ -390,6 +466,7 @@ mod tests {
                 sign: SignKind::Unsigned,
             },
             occurs: Some(3),
+            depending_on: None,
             redefines: None,
         }])
         .unwrap();

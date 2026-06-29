@@ -13,8 +13,14 @@ use crate::{Error, Result};
 /// A complete record layout: the field list plus the total record byte length.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Layout {
+    /// Static record length: the sum of the top-level fields' reserved widths.
+    /// For a [`Layout::variable`] layout this is the **minimum** length (the part
+    /// before any `OCCURS … DEPENDING ON` body); the real length is per-record.
     pub record_len: usize,
     pub fields: Vec<Field>,
+    /// Whether any field (at any depth) is `OCCURS … DEPENDING ON`, making the
+    /// record length vary per row. Such layouts cannot use `fixed` framing.
+    pub variable: bool,
 }
 
 /// One field within a record.
@@ -26,15 +32,35 @@ pub struct Field {
     /// Bytes consumed by a single occurrence of this field.
     pub width: usize,
     pub kind: FieldKind,
-    /// `OCCURS n` — a repeating field rendered as a LIST of `n` elements.
+    /// `OCCURS n` — a repeating field rendered as a LIST. For a fixed table this
+    /// is the exact element count; for `OCCURS … DEPENDING ON` it is the declared
+    /// **maximum** (the actual count comes from [`Field::depending_on`] at decode
+    /// time).
     pub occurs: Option<usize>,
+    /// `OCCURS … DEPENDING ON name` — the table length is the runtime value of the
+    /// field `name` (which must be decoded earlier in the record). When set, the
+    /// field reserves **zero** static footprint (following siblings' offsets are
+    /// as if the table were empty); decode/encode shift them by the actual body
+    /// size. `None` for a fixed-length field.
+    pub depending_on: Option<String>,
     /// `REDEFINES other` — this field reinterprets the same bytes as `other`.
     /// The worker folds a base field and all its redefiners into one STRUCT.
     pub redefines: Option<String>,
 }
 
 impl Field {
-    /// Total bytes this field consumes in the record (accounting for OCCURS).
+    /// Static bytes this field reserves in the record. A fixed table reserves
+    /// `width * occurs`; an `OCCURS … DEPENDING ON` table reserves **0** (its
+    /// body is positioned dynamically), so following fields don't leave a gap.
+    pub fn reserved_width(&self) -> usize {
+        if self.depending_on.is_some() {
+            0
+        } else {
+            self.width * self.occurs.unwrap_or(1)
+        }
+    }
+
+    /// Total bytes this field consumes for `count` occurrences of its element.
     pub fn total_width(&self) -> usize {
         self.width * self.occurs.unwrap_or(1)
     }
@@ -115,21 +141,29 @@ pub enum SignKind {
 }
 
 impl Layout {
-    /// Build a layout from a flat field list, validating that field extents fit
-    /// and computing the record length as the maximum field end (REDEFINES
-    /// overlap, so we take the max rather than the sum).
+    /// Build a layout from a flat field list, computing the static record length
+    /// as the maximum field end using **reserved** widths (REDEFINES overlap, so
+    /// we take the max not the sum; `OCCURS … DEPENDING ON` reserves 0). A layout
+    /// is `variable` if any field at any depth is `OCCURS … DEPENDING ON`.
     pub fn from_fields(fields: Vec<Field>) -> Result<Layout> {
         let record_len = fields
             .iter()
-            .map(|f| f.offset + f.total_width())
+            .map(|f| f.offset + f.reserved_width())
             .max()
             .unwrap_or(0);
-        Ok(Layout { record_len, fields })
+        let variable = fields.iter().any(has_depending_on);
+        Ok(Layout {
+            record_len,
+            fields,
+            variable,
+        })
     }
 
-    /// Validate that a record byte slice is long enough for this layout.
+    /// Validate that a record byte slice is long enough for this layout. For a
+    /// variable layout the static length is only a lower bound, and the decoder's
+    /// own bounds checks catch genuinely short records, so we skip the check.
     pub fn check_record_len(&self, len: usize) -> Result<()> {
-        if len < self.record_len {
+        if !self.variable && len < self.record_len {
             return Err(Error(format!(
                 "record too short: need {} bytes, got {}",
                 self.record_len, len
@@ -137,6 +171,12 @@ impl Layout {
         }
         Ok(())
     }
+}
+
+/// Whether `field` or any of its descendants is `OCCURS … DEPENDING ON`.
+fn has_depending_on(field: &Field) -> bool {
+    field.depending_on.is_some()
+        || matches!(&field.kind, FieldKind::Group(children) if children.iter().any(has_depending_on))
 }
 
 /// Parse a spec string into a [`Layout`], dispatching on `format` or
@@ -208,6 +248,7 @@ mod tests {
                     pad: b' ',
                 },
                 occurs: None,
+                depending_on: None,
                 redefines: None,
             },
             Field {
@@ -219,6 +260,7 @@ mod tests {
                     sign: SignKind::Unsigned,
                 },
                 occurs: None,
+                depending_on: None,
                 redefines: Some("raw".into()),
             },
         ];
@@ -237,6 +279,7 @@ mod tests {
                 sign: SignKind::Unsigned,
             },
             occurs: Some(3),
+            depending_on: None,
             redefines: None,
         };
         assert_eq!(f.total_width(), 12);

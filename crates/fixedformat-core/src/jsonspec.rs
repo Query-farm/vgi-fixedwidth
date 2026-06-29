@@ -4,6 +4,21 @@
 //! Each field object: `name`, `type`, and type-specific options (`width`,
 //! `digits`, `scale`, `signed`, `endian`, `occurs`, `justify`, `pad`, `sign`).
 //!
+//! A field may instead carry a nested `fields` array, which makes it a **group**
+//! rendered as a STRUCT (its `type` is then optional). Combined with `occurs` a
+//! group becomes a LIST of STRUCT, so nested and repeating sub-records are
+//! expressible without a COBOL copybook:
+//!
+//! ```json
+//! [
+//!   {"name": "hdr",  "type": "str", "width": 4},
+//!   {"name": "lines", "occurs": 3, "fields": [
+//!     {"name": "sku", "type": "str", "width": 3},
+//!     {"name": "qty", "type": "int", "digits": 2}
+//!   ]}
+//! ]
+//! ```
+//!
 //! ```json
 //! [
 //!   {"name": "id",   "type": "str",   "width": 10},
@@ -28,7 +43,7 @@ enum Spec {
 struct JsonField {
     name: Option<String>,
     #[serde(rename = "type")]
-    ty: String,
+    ty: Option<String>,
     width: Option<usize>,
     digits: Option<u8>,
     scale: Option<u8>,
@@ -38,6 +53,10 @@ struct JsonField {
     justify: Option<String>,
     pad: Option<String>,
     sign: Option<String>,
+    /// Nested group: child fields rendered as a STRUCT column. With `occurs`
+    /// it becomes a LIST of STRUCT. When present this field is a group and
+    /// `type` is optional (`"group"`/`"struct"` are accepted but ignored).
+    fields: Option<Vec<JsonField>>,
 }
 
 /// Parse a JSON spec into a [`Layout`].
@@ -49,15 +68,31 @@ pub fn parse(src: &str) -> Result<Layout> {
         Spec::Wrapped { fields } => fields,
     };
 
+    let mut auto = 0usize;
+    let (fields, _width) = layout_fields(&raw, &mut auto)?;
+    Layout::from_fields(fields)
+}
+
+/// Lower a sibling list of JSON fields into [`Field`]s. Offsets are relative to
+/// the siblings' start (so a group's children are group-relative, matching the
+/// codec contract); returns the fields and the bytes a single occurrence of the
+/// whole list consumes. `auto` threads the auto-naming counter through nesting.
+fn layout_fields(raw: &[JsonField], auto: &mut usize) -> Result<(Vec<Field>, usize)> {
     let mut fields = Vec::with_capacity(raw.len());
     let mut offset = 0usize;
-    let mut auto = 0usize;
     for jf in raw {
         let name = jf.name.clone().unwrap_or_else(|| {
-            auto += 1;
+            *auto += 1;
             format!("field_{auto}")
         });
-        let (kind, width) = field_kind(&jf)?;
+        // A `fields` array makes this a group (STRUCT); otherwise it's a leaf.
+        let (kind, width) = match &jf.fields {
+            Some(children) => {
+                let (child_fields, gw) = layout_fields(children, auto)?;
+                (FieldKind::Group(child_fields), gw)
+            }
+            None => field_kind(jf)?,
+        };
         let total = width * jf.occurs.unwrap_or(1);
         fields.push(Field {
             name,
@@ -65,11 +100,12 @@ pub fn parse(src: &str) -> Result<Layout> {
             width,
             kind,
             occurs: jf.occurs,
+            depending_on: None,
             redefines: None,
         });
         offset += total;
     }
-    Layout::from_fields(fields)
+    Ok((fields, offset))
 }
 
 fn field_kind(jf: &JsonField) -> Result<(FieldKind, usize)> {
@@ -81,7 +117,16 @@ fn field_kind(jf: &JsonField) -> Result<(FieldKind, usize)> {
     let signed = jf.signed.unwrap_or(false);
     let sign = parse_sign(jf.sign.as_deref(), signed)?;
 
-    match jf.ty.to_ascii_lowercase().as_str() {
+    let ty = jf
+        .ty
+        .as_deref()
+        .ok_or_else(|| Error(format!("field {:?} requires a type", jf.name)))?;
+
+    match ty.to_ascii_lowercase().as_str() {
+        "group" | "struct" => Err(Error(format!(
+            "group field {:?} requires a \"fields\" array",
+            jf.name
+        ))),
         "str" | "string" | "text" | "char" | "x" => {
             let width = req_width(jf)?;
             Ok((
@@ -253,5 +298,78 @@ mod tests {
         let layout = parse(spec).unwrap();
         assert_eq!(layout.fields[0].occurs, Some(3));
         assert_eq!(layout.record_len, 6);
+    }
+
+    #[test]
+    fn nested_group_becomes_struct() {
+        // A header field followed by a nested ITEM group (sku + qty).
+        let spec = r#"[
+            {"name":"hdr","type":"str","width":4},
+            {"name":"item","fields":[
+                {"name":"sku","type":"str","width":3},
+                {"name":"qty","type":"int","digits":2}
+            ]}
+        ]"#;
+        let layout = parse(spec).unwrap();
+        assert_eq!(layout.fields.len(), 2);
+        assert_eq!(layout.fields[1].offset, 4);
+        // Group children are relative to the group's start.
+        match &layout.fields[1].kind {
+            FieldKind::Group(children) => {
+                assert_eq!(children.len(), 2);
+                assert_eq!(children[0].offset, 0);
+                assert_eq!(children[1].offset, 3);
+            }
+            other => panic!("expected group, got {other:?}"),
+        }
+        assert_eq!(layout.record_len, 4 + 3 + 2);
+
+        let out = decode_record(&layout, b"HEADABC07", Encoding::Ascii).unwrap();
+        assert_eq!(out[0].1, Value::Text("HEAD".into()));
+        assert_eq!(
+            out[1].1,
+            Value::Struct(vec![
+                ("sku".into(), Value::Text("ABC".into())),
+                ("qty".into(), Value::Int(7)),
+            ])
+        );
+    }
+
+    #[test]
+    fn group_with_occurs_is_list_of_structs() {
+        // OCCURS on a group → LIST of STRUCT (array of sub-records).
+        let spec = r#"[
+            {"name":"lines","occurs":2,"fields":[
+                {"name":"a","type":"str","width":2},
+                {"name":"b","type":"int","digits":1}
+            ]}
+        ]"#;
+        let layout = parse(spec).unwrap();
+        assert_eq!(layout.fields[0].occurs, Some(2));
+        // Each occurrence is 3 bytes; two of them → 6.
+        assert_eq!(layout.record_len, 6);
+
+        let out = decode_record(&layout, b"XX1YY2", Encoding::Ascii).unwrap();
+        let elem = |a: &str, b: i64| {
+            Value::Struct(vec![
+                ("a".into(), Value::Text(a.into())),
+                ("b".into(), Value::Int(b)),
+            ])
+        };
+        assert_eq!(out[0].1, Value::List(vec![elem("XX", 1), elem("YY", 2)]));
+    }
+
+    #[test]
+    fn group_type_without_fields_errors() {
+        let spec = r#"[{"name":"x","type":"group"}]"#;
+        let err = parse(spec).unwrap_err().0;
+        assert!(err.contains("requires a \"fields\" array"), "{err}");
+    }
+
+    #[test]
+    fn leaf_without_type_errors() {
+        let spec = r#"[{"name":"x","width":4}]"#;
+        let err = parse(spec).unwrap_err().0;
+        assert!(err.contains("requires a type"), "{err}");
     }
 }

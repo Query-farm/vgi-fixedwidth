@@ -8,6 +8,7 @@
 
 pub mod copybook;
 pub mod decode;
+pub mod describe;
 pub mod ebcdic;
 pub mod encode;
 pub mod framing;

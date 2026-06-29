@@ -11,21 +11,15 @@ use crate::layout::{Endian, Field, FieldKind, Justify, Layout, NumRepr, SignKind
 use crate::value::Value;
 use crate::{packed, zoned, Encoding, Error, Result};
 
-/// Encode a record from `(name, value)` pairs.
+/// Encode a record from `(name, value)` pairs. The buffer starts at the layout's
+/// static length and grows as needed for `OCCURS … DEPENDING ON` bodies.
 pub fn encode_record(
     layout: &Layout,
     values: &[(String, Value)],
     enc: Encoding,
 ) -> Result<Vec<u8>> {
     let mut buf = vec![0u8; layout.record_len];
-    for field in &layout.fields {
-        if let FieldKind::Pad { pad } = field.kind {
-            fill(&mut buf, field.offset, field.total_width(), pad, enc);
-            continue;
-        }
-        let value = lookup(values, &field.name);
-        encode_field(field, 0, &mut buf, value, enc)?;
-    }
+    encode_seq(&layout.fields, 0, &mut buf, values, enc)?;
     Ok(buf)
 }
 
@@ -37,15 +31,57 @@ fn lookup<'a>(values: &'a [(String, Value)], name: &str) -> &'a Value {
         .unwrap_or(&Value::Null)
 }
 
+/// Encode a sibling field list at `base`, returning bytes consumed past `base`.
+/// Mirrors `decode::decode_seq`: addressing is `base + offset + shift`, where
+/// `shift` accumulates each OCCURS DEPENDING ON body (which reserves no static
+/// footprint). REDEFINES variants share an offset and overlap (last write wins).
+fn encode_seq(
+    fields: &[Field],
+    base: usize,
+    buf: &mut Vec<u8>,
+    values: &[(String, Value)],
+    enc: Encoding,
+) -> Result<usize> {
+    let mut shift = 0usize;
+    let mut end = base;
+    for field in fields {
+        let at = base + field.offset + shift;
+        let value = lookup(values, &field.name);
+        let consumed = encode_field(field, at, buf, value, enc)?;
+        shift += consumed.saturating_sub(field.reserved_width());
+        end = end.max(at + consumed);
+    }
+    Ok(end - base)
+}
+
+/// Encode a single field (handling OCCURS / OCCURS DEPENDING ON) at `at`,
+/// returning the bytes it consumed. For a DEPENDING ON table the element count
+/// is the length of the supplied list (the controlling field is encoded from its
+/// own value, which the producer is responsible for keeping consistent).
 fn encode_field(
     field: &Field,
-    base: usize,
-    buf: &mut [u8],
+    at: usize,
+    buf: &mut Vec<u8>,
     value: &Value,
     enc: Encoding,
-) -> Result<()> {
-    match field.occurs {
-        None => encode_one(field, base + field.offset, buf, value, enc),
+) -> Result<usize> {
+    let count = if field.depending_on.is_some() {
+        match value {
+            Value::List(items) => Some(items.len()),
+            Value::Null => Some(0),
+            other => {
+                return Err(Error(format!(
+                    "field {} expects a list, got {other:?}",
+                    field.name
+                )))
+            }
+        }
+    } else {
+        field.occurs
+    };
+
+    match count {
+        None => encode_one(field, at, buf, value, enc),
         Some(n) => {
             let items: Vec<Value> = match value {
                 Value::List(items) => items.clone(),
@@ -57,12 +93,12 @@ fn encode_field(
                     )))
                 }
             };
+            let mut cursor = at;
             for i in 0..n {
-                let at = base + field.offset + i * field.width;
                 let item = items.get(i).unwrap_or(&Value::Null);
-                encode_one(field, at, buf, item, enc)?;
+                cursor += encode_one(field, cursor, buf, item, enc)?;
             }
-            Ok(())
+            Ok(cursor - at)
         }
     }
 }
@@ -70,10 +106,10 @@ fn encode_field(
 fn encode_one(
     field: &Field,
     at: usize,
-    buf: &mut [u8],
+    buf: &mut Vec<u8>,
     value: &Value,
     enc: Encoding,
-) -> Result<()> {
+) -> Result<usize> {
     let width = field.width;
     match &field.kind {
         FieldKind::Group(children) => {
@@ -87,24 +123,9 @@ fn encode_one(
                     )))
                 }
             };
-            // Only the base (first non-pad) child is written for REDEFINES groups;
-            // for ordinary groups every child writes its own disjoint bytes.
-            let mut written_base = false;
-            for child in children {
-                if matches!(child.kind, FieldKind::Pad { .. }) {
-                    continue;
-                }
-                let is_redefiner = child.redefines.is_some();
-                if is_redefiner && written_base {
-                    continue;
-                }
-                let v = lookup(&fields, &child.name);
-                encode_field(child, at, buf, v, enc)?;
-                if !is_redefiner {
-                    written_base = true;
-                }
-            }
-            Ok(())
+            // Children are written by `encode_seq`; for a REDEFINES union every
+            // variant shares offset 0, so they overlap and the last write wins.
+            encode_seq(children, at, buf, &fields, enc)
         }
         FieldKind::Text { justify, pad, .. } => {
             let s = match value {
@@ -114,23 +135,23 @@ fn encode_one(
             };
             let bytes = justify_pad(s.as_bytes(), width, *justify, *pad)?;
             put(buf, at, &maybe_ebcdic(&bytes, enc));
-            Ok(())
+            Ok(width)
         }
         FieldKind::Int { signed, sign } => {
             let n = as_i128(value)?;
             let bytes = encode_display_int(n, width, *signed, *sign)?;
             put(buf, at, &maybe_ebcdic(&bytes, enc));
-            Ok(())
+            Ok(width)
         }
         FieldKind::Binary { endian, signed } => {
             let n = as_i128(value)?;
             put(buf, at, &encode_binary_int(n, width, *endian, *signed)?);
-            Ok(())
+            Ok(width)
         }
         FieldKind::Float { bits, endian } => {
             let f = as_f64(value)?;
             put(buf, at, &encode_float(f, *bits, *endian)?);
-            Ok(())
+            Ok(width)
         }
         FieldKind::Hex { order } => {
             let s = match value {
@@ -139,16 +160,16 @@ fn encode_one(
                 other => return Err(Error(format!("hex field expects text, got {other:?}"))),
             };
             put(buf, at, &encode_hex(&s, width, *order)?);
-            Ok(())
+            Ok(width)
         }
         FieldKind::Bool => {
             let b = matches!(value, Value::Bool(true) | Value::Int(1));
             put(buf, at, &[if b { 1 } else { 0 }]);
-            Ok(())
+            Ok(width)
         }
         FieldKind::Pad { pad } => {
             fill(buf, at, width, *pad, enc);
-            Ok(())
+            Ok(width)
         }
         FieldKind::Decimal {
             precision,
@@ -167,7 +188,7 @@ fn encode_one(
                 ),
             };
             put(buf, at, &bytes);
-            Ok(())
+            Ok(width)
         }
     }
 }
@@ -179,18 +200,25 @@ fn maybe_ebcdic(bytes: &[u8], enc: Encoding) -> Vec<u8> {
     }
 }
 
-fn put(buf: &mut [u8], at: usize, bytes: &[u8]) {
-    let end = (at + bytes.len()).min(buf.len());
-    buf[at..end].copy_from_slice(&bytes[..end - at]);
+/// Grow `buf` with zero bytes so index `end` is writable.
+fn ensure(buf: &mut Vec<u8>, end: usize) {
+    if buf.len() < end {
+        buf.resize(end, 0);
+    }
 }
 
-fn fill(buf: &mut [u8], at: usize, width: usize, pad: u8, enc: Encoding) {
+fn put(buf: &mut Vec<u8>, at: usize, bytes: &[u8]) {
+    ensure(buf, at + bytes.len());
+    buf[at..at + bytes.len()].copy_from_slice(bytes);
+}
+
+fn fill(buf: &mut Vec<u8>, at: usize, width: usize, pad: u8, enc: Encoding) {
     let b = match enc {
         Encoding::Ascii => pad,
         Encoding::Ebcdic => ebcdic::to_ebcdic(pad),
     };
-    let end = (at + width).min(buf.len());
-    for slot in &mut buf[at..end] {
+    ensure(buf, at + width);
+    for slot in &mut buf[at..at + width] {
         *slot = b;
     }
 }
@@ -412,6 +440,7 @@ mod tests {
             width,
             kind,
             occurs: None,
+            depending_on: None,
             redefines: None,
         }
     }

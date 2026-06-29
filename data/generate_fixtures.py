@@ -81,4 +81,9 @@ write("short_line.dat", b"JOHN      00042\nSHORT\n")
 # Fixed-length stream whose length is not a multiple of the record length (5).
 write("ragged_fb.dat", b"AAA00BB")
 
+# --- OCCURS DEPENDING ON (variable-length records, newline-framed) ---
+# Layout: N PIC 9(1), ITEMS OCCURS 1 TO 9 DEPENDING ON N PIC X(2), TRAILER X(3).
+# Each record's length varies with N, so it needs newline (or RDW) framing.
+write("odo.dat", b"2AABBEND\n1XYEND\n0ZZZ\n")
+
 print("done")

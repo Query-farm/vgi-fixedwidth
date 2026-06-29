@@ -27,6 +27,14 @@ needed.
 - `fixed.main.write_fixed((FROM rel), path, spec [, format =>, encoding =>, framing =>])`
   — write a relation to a fixed-width file (table-buffering sink); returns
   `(rows_written, bytes_written)`.
+- `fixed.main.describe_fixed(spec [, format =>])` — introspect a layout spec
+  **without reading data** (table function in
+  `crates/fixedformat-worker/src/table/describe_fixed.rs`; fixed output schema).
+  One row per field (groups + children), columns: `path` (dotted, e.g.
+  `item.sku`), `depth`, `kind` (codec label), `sql_type` (the DuckDB column type,
+  e.g. `STRUCT`, `DECIMAL(9,2)`, `BIGINT[]`), `byte_offset` (named to dodge the
+  `OFFSET` keyword), `width`, `occurs` (OCCURS max, else NULL), `depending_on`
+  (ODO controller, else NULL). Flatten logic is in `fixedformat-core/src/describe.rs`.
 - `fixed.main.fixedformat_version()`.
 - `COPY <table> FROM '<path>' (FORMAT 'fixed.fixed', spec '<layout>' [, format, encoding,
   framing, record_length, endpoint, region, url_style, use_ssl])` — load a fixed-width
@@ -101,10 +109,25 @@ SELECT * FROM fixed.main.read_fixed('s3://bucket/x.dat', 'A10 N',
   `< > ! = @` byte-order, plus display PIC tokens `9(5)` / `S9(7)V99` / `X(10)`.
   Count is a width for string/hex/pad codes, a repeat (→ LIST) for numerics.
 - **json** — `[{"name","type","width"|"digits","scale","signed","endian","occurs",
-  "justify","pad","sign"}, ...]` (or `{"fields":[...]}`).
+  "justify","pad","sign"}, ...]` (or `{"fields":[...]}`). A field may instead carry
+  a nested `"fields":[...]` array → it becomes a **group** (STRUCT; `type` optional),
+  and with `"occurs"` → a LIST of STRUCT. So nested/repeating sub-records are
+  expressible without a copybook (`jsonspec::layout_fields` recurses; children get
+  group-relative offsets, same contract as copybook's `layout_nodes`).
 - **copybook** — COBOL: nested groups (→ STRUCT), `PIC X/A/9/S/V`, `USAGE
-  COMP-3`/`COMP`/`BINARY`, `OCCURS n` (→ LIST), `REDEFINES` (→ folded STRUCT),
-  `SIGN LEADING/TRAILING [SEPARATE]`.
+  COMP-3`/`COMP`/`BINARY`, `OCCURS n` (→ LIST), `OCCURS [m TO] n DEPENDING ON ctrl`
+  (variable-length table → LIST sized by the runtime value of `ctrl`), `REDEFINES`
+  (→ folded STRUCT), `SIGN LEADING/TRAILING [SEPARATE]`.
+
+`OCCURS … DEPENDING ON` makes the record **variable-length**: such a table reserves
+**zero** static footprint, so fields after it shift by the actual body size.
+`Layout.variable` flags it; `Field.depending_on` names the controller and
+`Field.reserved_width()` returns 0. decode/encode (`decode.rs`/`encode.rs`) are
+**shift-based**: each sibling list is walked with a running `shift` (= Σ consumed −
+reserved), the controller's decoded Int is looked up from a name→value `scope`, and
+encode grows its buffer (the static `record_len` is then only the **minimum**).
+Variable layouts can't use `fixed` framing (the read path errors — use
+`newline`/`rdw`); the controller must be decoded **before** the table.
 
 Types: decimals (COMP-3/zoned/implied-point) → `DECIMAL(p,s)`, ints → `BIGINT`,
 floats → `REAL`/`DOUBLE`, text/hex → `VARCHAR`, `?` → `BOOLEAN`. Encodings:
@@ -127,10 +150,10 @@ floats → `REAL`/`DOUBLE`, text/hex → `VARCHAR`, `?` → `BOOLEAN`. Encodings
 ## Build & test
 
 ```sh
-cargo test -p fixedformat-core   # 63 unit tests + proptest round-trip fuzzing (tests/roundtrip.rs)
+cargo test -p fixedformat-core   # 73 unit tests + proptest round-trip fuzzing (tests/roundtrip.rs)
 cargo clippy --all-targets       # keep clean
 cargo build --release            # build the worker
-./run_tests.sh                   # end-to-end SQLLogic suite (9 files, see below)
+./run_tests.sh                   # end-to-end SQLLogic suite (13 files, see below)
 ./run_tests.sh test/sql/types.test   # single file (Catch2 filter; trailing * only)
 ```
 

@@ -20,6 +20,7 @@ fn rt(kind: FieldKind, width: usize, occurs: Option<usize>, value: Value, enc: E
         width,
         kind,
         occurs,
+        depending_on: None,
         redefines: None,
     };
     let layout = Layout::from_fields(vec![field]).unwrap();

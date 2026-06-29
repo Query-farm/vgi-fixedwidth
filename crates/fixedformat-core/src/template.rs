@@ -67,6 +67,7 @@ pub fn parse(src: &str) -> Result<Layout> {
             width,
             kind,
             occurs,
+            depending_on: None,
             redefines: None,
         });
         offset += total;

@@ -246,6 +246,16 @@ pub(crate) fn read_all(
     secrets: &Secrets,
     overrides: &[(String, String)],
 ) -> Result<Vec<Vec<Value>>> {
+    // A variable-length layout (OCCURS … DEPENDING ON) has no constant record
+    // size, so `fixed` framing — which chunks the stream into equal-length
+    // records — cannot delimit it. Require a self-describing framing instead.
+    if layout.variable && framing == Framing::Fixed {
+        return Err(ve(
+            "OCCURS … DEPENDING ON makes records variable-length; use framing => 'newline', \
+             'rdw', or 'rdw_blocked' (not 'fixed')",
+        ));
+    }
+
     let mut rows = Vec::new();
     for loc in locations {
         let data = match loc {
