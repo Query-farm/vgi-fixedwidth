@@ -29,7 +29,8 @@ one of `linux_amd64`, `linux_arm64`, `osx_amd64`, `osx_arm64`, `windows_amd64`)
 and unpack the `fixedformat-worker` executable…
 
 ```sh
-tar -xzf vgi-fixedformat-v0.1.0-osx_arm64.tar.gz   # → fixedformat-worker
+# Replace <version> with the release tag, e.g. v0.4.0, and pick your platform.
+tar -xzf vgi-fixedformat-<version>-osx_arm64.tar.gz   # → fixedformat-worker
 ```
 
 …or build it from source (needs Rust 1.90+):
@@ -53,6 +54,24 @@ SET search_path = 'fixed.main';   -- so you can call functions unqualified
 
 Use an **absolute** `LOCATION` (it's resolved relative to DuckDB's working
 directory).
+
+### Compatibility & limits
+
+- **DuckDB / vgi:** needs a DuckDB with the `vgi` community extension (the worker
+  speaks Arrow IPC over the VGI protocol). Built against `vgi 0.9.5` / arrow 59;
+  the prebuilt binaries are platform-specific (download the one matching your OS
+  and CPU). If `ATTACH` fails with an opaque Arrow/IPC error, you most likely have
+  a mismatched `vgi` extension version — update it (`UPDATE EXTENSIONS;`).
+- **Not yet supported:** writing compressed output (`write_fixed` / `COPY … TO`
+  emit raw bytes); `COPY … TO` does not forward `CREATE SECRET` credentials (use
+  `write_fixed` for secret-backed cloud writes); `http(s)://` is **read-only**
+  (single object — no globbing); encodings are ASCII and EBCDIC CP037 only (no
+  Latin-1 / UTF-16 / other code pages yet).
+- **Safety caps (untrusted input):** decompression is bounded by
+  `max_decompressed_bytes` (16 GiB default; gzip/zstd only) to stop a
+  decompression bomb, a single record by 512 MiB, and `DECIMAL` precision by 38.
+  An `http(s)://` read to an internal host (cloud metadata, loopback, RFC-1918)
+  is refused — set `FIXEDFORMAT_ALLOW_INTERNAL_HOSTS=1` to override.
 
 ---
 

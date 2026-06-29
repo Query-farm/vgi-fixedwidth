@@ -189,6 +189,7 @@ impl TableBufferingFunction for WriteFixed {
             .arguments
             .const_str(1)
             .ok_or_else(|| ve("write_fixed: path is required"))?;
+        cloud::reject_compressed_dest(&path)?;
 
         // Drain all buffered batches, encoding each row to a framed record.
         let mut records: Vec<Vec<u8>> = Vec::new();

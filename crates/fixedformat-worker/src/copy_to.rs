@@ -197,6 +197,7 @@ impl CopyToFunction for CopyToFixed {
         }
 
         // An empty COPY still writes an (empty) destination file.
+        cloud::reject_compressed_dest(ctx.path)?;
         let body = assemble(&records, framing);
         let rows_written = records.len() as i64;
         match cloud::classify(ctx.path)? {
