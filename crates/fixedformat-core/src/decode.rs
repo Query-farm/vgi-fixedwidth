@@ -99,10 +99,25 @@ fn decode_field(
     match count {
         None => decode_one(field, at, bytes, enc, scope),
         Some(n) => {
-            let mut items = Vec::with_capacity(n);
+            // Guard against a hostile element count — an `OCCURS … DEPENDING ON`
+            // whose controller value lives in attacker-controlled data, or a spec
+            // with a huge static `OCCURS`. A record can hold at most one element
+            // per remaining byte, so cap the *capacity hint* accordingly: a 1-byte
+            // record claiming millions of elements then can't pre-allocate GBs —
+            // `decode_one` fails fast on the first out-of-bounds slice instead.
+            let remaining = bytes.len().saturating_sub(at);
+            let mut items = Vec::with_capacity(n.min(remaining + 1));
             let mut cursor = at;
             for _ in 0..n {
                 let (v, consumed) = decode_one(field, cursor, bytes, enc, scope)?;
+                // A zero-consumption element would let `n` iterate unboundedly
+                // without making progress through the record — refuse it so a huge
+                // count over zero-width elements can't exhaust memory/CPU.
+                if consumed == 0 {
+                    return Err(Error(format!(
+                        "OCCURS element consumed 0 bytes; refusing to expand {n} occurrences"
+                    )));
+                }
                 cursor += consumed;
                 items.push(v);
             }

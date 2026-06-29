@@ -147,6 +147,14 @@ impl CopyFromFunction for CopyFixed {
                  paths alike; decompression happens before framing/decoding.",
             ),
             ArgSpec::column(
+                "max_decompressed_bytes",
+                -1,
+                "int64",
+                "Safety cap on total DECOMPRESSED bytes per file (a decompression-bomb backstop; \
+                 default 16 GiB). Only applies to gzip/zstd input. Raise it to load a \
+                 legitimately huge compressed file.",
+            ),
+            ArgSpec::column(
                 "endpoint",
                 -1,
                 "varchar",
@@ -203,6 +211,7 @@ impl CopyFromFunction for CopyFixed {
             .map(|n| n as usize)
             .unwrap_or(layout.record_len);
         let compression = options::compression(ctx.options)?;
+        let limits = options::read_limits(ctx.options)?;
         let overrides = options::cloud_overrides(ctx.options);
 
         // The source path may be local or a cloud URL (with secrets/overrides).
@@ -214,6 +223,7 @@ impl CopyFromFunction for CopyFixed {
             framing,
             rec_len,
             compression,
+            limits,
             &ctx.params.secrets,
             &overrides,
         )?;

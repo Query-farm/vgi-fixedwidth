@@ -22,7 +22,7 @@ use arrow_schema::SchemaRef;
 use fixedformat_core::compression::Compression;
 use fixedformat_core::decode::decode_record;
 use fixedformat_core::framing::Framing;
-use fixedformat_core::stream::{decompress_reader, RecordStream};
+use fixedformat_core::stream::{decompress_reader, Limits, RecordStream};
 use fixedformat_core::{Encoding, Layout, Value};
 use object_store::path::Path as ObjPath;
 use object_store::ObjectStore;
@@ -119,23 +119,31 @@ fn open_stream(
     framing: Framing,
     rec_len: usize,
     compression: Option<Compression>,
+    limits: Limits,
 ) -> Result<RecordIter> {
     let raw = source.open()?;
-    let plain = decompress_reader(raw, compression).map_err(ve)?;
-    RecordStream::new(BufReader::new(plain), framing, rec_len).map_err(ve)
+    let plain = decompress_reader(raw, compression, limits.max_decompressed_bytes).map_err(ve)?;
+    RecordStream::new(BufReader::new(plain), framing, rec_len, limits.max_record_bytes).map_err(ve)
 }
 
-/// Build a `RecordBatch` for `rows` (one inner `Vec<Value>` per record, in column
-/// order) against `schema`. Shared by the streaming producer and the eager
-/// [`read_all`] collector so the Arrow array building lives in one place.
-pub(crate) fn build_batch(schema: &SchemaRef, rows: &[Vec<Value>]) -> Result<RecordBatch> {
-    let mut columns: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len());
-    for (j, field) in schema.fields().iter().enumerate() {
-        let col: Vec<Value> = rows
-            .iter()
-            .map(|row| row.get(j).cloned().unwrap_or(Value::Null))
-            .collect();
-        columns.push(crate::arrow_map::build_array(field.data_type(), &col)?);
+/// Build a `RecordBatch` from `rows` (one inner `Vec<Value>` per record, in column
+/// order) against `schema`. Takes ownership and transposes row-major → columnar
+/// by **moving** each `Value` exactly once (no per-cell clone). Shared by the
+/// streaming producer and the eager [`read_all`] collector.
+pub(crate) fn build_batch(schema: &SchemaRef, rows: Vec<Vec<Value>>) -> Result<RecordBatch> {
+    let ncols = schema.fields().len();
+    let mut cols: Vec<Vec<Value>> = (0..ncols).map(|_| Vec::with_capacity(rows.len())).collect();
+    for row in rows {
+        // Drain each row into the per-column accumulators; a short row (fewer
+        // values than columns) is padded with NULL, matching the prior behavior.
+        let mut it = row.into_iter();
+        for col in cols.iter_mut() {
+            col.push(it.next().unwrap_or(Value::Null));
+        }
+    }
+    let mut columns: Vec<ArrayRef> = Vec::with_capacity(ncols);
+    for (field, col) in schema.fields().iter().zip(&cols) {
+        columns.push(crate::arrow_map::build_array(field.data_type(), col)?);
     }
     RecordBatch::try_new(schema.clone(), columns)
         .map_err(|e| RpcError::runtime_error(e.to_string()))
@@ -154,6 +162,7 @@ pub(crate) fn read_all(
     framing: Framing,
     rec_len: usize,
     compression: Option<Compression>,
+    limits: Limits,
     secrets: &Secrets,
     overrides: &[(String, String)],
 ) -> Result<Vec<Vec<Value>>> {
@@ -161,7 +170,7 @@ pub(crate) fn read_all(
     let sources = resolve_sources(locations, secrets, overrides)?;
     let mut rows = Vec::new();
     for source in &sources {
-        let stream = open_stream(source, framing, rec_len, compression)?;
+        let stream = open_stream(source, framing, rec_len, compression, limits)?;
         for rec in stream {
             let rec = rec.map_err(ve)?;
             let pairs = decode_record(layout, &rec, enc).map_err(ve)?;
@@ -181,6 +190,7 @@ pub(crate) struct StreamingProducer {
     framing: Framing,
     rec_len: usize,
     compression: Option<Compression>,
+    limits: Limits,
     sources: Vec<Source>,
     /// Index of the next source to open once `current` is exhausted.
     idx: usize,
@@ -198,6 +208,7 @@ impl StreamingProducer {
         framing: Framing,
         rec_len: usize,
         compression: Option<Compression>,
+        limits: Limits,
         sources: Vec<Source>,
     ) -> Self {
         StreamingProducer {
@@ -207,6 +218,7 @@ impl StreamingProducer {
             framing,
             rec_len,
             compression,
+            limits,
             sources,
             idx: 0,
             current: None,
@@ -229,6 +241,7 @@ impl TableProducer for StreamingProducer {
                     self.framing,
                     self.rec_len,
                     self.compression,
+                    self.limits,
                 )?);
             }
             let stream = self
@@ -251,6 +264,6 @@ impl TableProducer for StreamingProducer {
         if rows.is_empty() {
             return Ok(None);
         }
-        Ok(Some(build_batch(&self.schema, &rows)?))
+        Ok(Some(build_batch(&self.schema, rows)?))
     }
 }

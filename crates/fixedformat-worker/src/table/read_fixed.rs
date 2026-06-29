@@ -168,6 +168,14 @@ impl TableFunction for ReadFixed {
                  bytes, else read raw), 'none', 'gzip', or 'zstd'. Applies to local and cloud \
                  paths alike; decompression happens before framing/decoding.",
             ),
+            ArgSpec::const_arg(
+                "max_decompressed_bytes",
+                -1,
+                "int64",
+                "Safety cap on total DECOMPRESSED bytes per file (a decompression-bomb backstop; \
+                 default 16 GiB). Only applies to gzip/zstd input — uncompressed files are \
+                 unbounded. Raise it to read a legitimately huge compressed file.",
+            ),
         ]
         .into_iter()
         .chain(options::cloud_arg_specs())
@@ -208,6 +216,7 @@ impl TableFunction for ReadFixed {
         let framing = options::framing(&params.arguments)?;
         let rec_len = record_length(&params.arguments, &layout);
         let compression = options::compression(&params.arguments)?;
+        let limits = options::read_limits(&params.arguments)?;
         // Reject `fixed` framing for a variable-length layout up front (same
         // guard the eager `COPY … FROM` path applies).
         crate::reader::check_variable_framing(&layout, framing)?;
@@ -236,6 +245,7 @@ impl TableFunction for ReadFixed {
             framing,
             rec_len,
             compression,
+            limits,
             sources,
         )))
     }

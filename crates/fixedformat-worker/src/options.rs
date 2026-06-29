@@ -3,6 +3,7 @@
 
 use fixedformat_core::compression::Compression;
 use fixedformat_core::framing::Framing;
+use fixedformat_core::stream::Limits;
 use fixedformat_core::{parse_spec, Encoding, Layout};
 use vgi::arguments::Arguments;
 use vgi::ArgSpec;
@@ -108,6 +109,21 @@ pub fn compression(args: &Arguments) -> Result<Option<Compression>> {
             .map(Some)
             .map_err(|e| ve(e.to_string())),
     }
+}
+
+/// Resolve the read resource limits (decompression-bomb / pathological-record
+/// backstops) from named arguments, falling back to [`Limits::default`].
+/// `max_decompressed_bytes =>` raises (or lowers) the cap on total decompressed
+/// bytes per source.
+pub fn read_limits(args: &Arguments) -> Result<Limits> {
+    let mut limits = Limits::default();
+    if let Some(n) = args.named_i64("max_decompressed_bytes") {
+        if n <= 0 {
+            return Err(ve("max_decompressed_bytes must be a positive number of bytes"));
+        }
+        limits.max_decompressed_bytes = n as u64;
+    }
+    Ok(limits)
 }
 
 /// Named-argument object-store overrides (`endpoint =>`, `region =>`,
