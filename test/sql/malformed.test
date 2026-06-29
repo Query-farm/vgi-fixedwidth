@@ -19,11 +19,12 @@ SELECT * FROM read_fixed('data/bad_comp3.dat',
 ----
 invalid comp-3 digit nibble
 
-# A line shorter than the layout (second newline record) is rejected.
+# A line shorter than the layout (second newline record) is rejected — and the
+# error pinpoints the source file and 1-based record number.
 statement error
 SELECT * FROM read_fixed('data/short_line.dat', 'name:A10 qty:9(5)');
 ----
-record too short
+record 2: record too short
 
 # A fixed-length stream whose size isn't a multiple of the record length.
 statement error

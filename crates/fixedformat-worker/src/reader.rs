@@ -58,6 +58,14 @@ pub(crate) enum Source {
 }
 
 impl Source {
+    /// A short human label for this source, used to locate a failing record.
+    fn label(&self) -> &str {
+        match self {
+            Source::Local(p) => p,
+            Source::Remote { url, .. } => url.as_str(),
+        }
+    }
+
     /// Open this source as a buffered byte reader. Local → `BufReader<File>`;
     /// remote → the object's bytes fetched now and wrapped in a `Cursor`.
     fn open(&self) -> Result<Box<dyn BufRead + Send>> {
@@ -176,10 +184,12 @@ pub(crate) fn read_all(
     let sources = resolve_sources(locations, secrets, overrides)?;
     let mut rows = Vec::new();
     for source in &sources {
+        let label = source.label();
         let stream = open_stream(source, framing, rec_len, compression, limits)?;
-        for rec in stream {
-            let rec = rec.map_err(ve)?;
-            let pairs = decode_record(layout, &rec, enc).map_err(ve)?;
+        for (i, rec) in stream.enumerate() {
+            let rec = rec.map_err(|e| ve(format!("{label}: {e}")))?;
+            let pairs = decode_record(layout, &rec, enc)
+                .map_err(|e| ve(format!("{label}: record {}: {e}", i + 1)))?;
             rows.push(pairs.into_iter().map(|(_, v)| v).collect());
         }
     }
@@ -200,6 +210,8 @@ pub(crate) struct StreamingProducer {
     sources: Vec<Source>,
     /// Index of the next source to open once `current` is exhausted.
     idx: usize,
+    /// Records yielded so far from the source at `idx` (1-based in errors).
+    seen: u64,
     /// The record iterator for the source currently being drained.
     current: Option<RecordIter>,
 }
@@ -227,6 +239,7 @@ impl StreamingProducer {
             limits,
             sources,
             idx: 0,
+            seen: 0,
             current: None,
         }
     }
@@ -249,6 +262,7 @@ impl TableProducer for StreamingProducer {
                     self.compression,
                     self.limits,
                 )?);
+                self.seen = 0;
             }
             let stream = self
                 .current
@@ -256,8 +270,12 @@ impl TableProducer for StreamingProducer {
                 .expect("current stream was just ensured");
             match stream.next() {
                 Some(rec) => {
-                    let rec = rec.map_err(ve)?;
-                    let pairs = decode_record(&self.layout, &rec, self.enc).map_err(ve)?;
+                    self.seen += 1;
+                    let n = self.seen;
+                    let label = self.sources[self.idx].label();
+                    let rec = rec.map_err(|e| ve(format!("{label}: {e}")))?;
+                    let pairs = decode_record(&self.layout, &rec, self.enc)
+                        .map_err(|e| ve(format!("{label}: record {n}: {e}")))?;
                     rows.push(pairs.into_iter().map(|(_, v)| v).collect());
                 }
                 None => {
