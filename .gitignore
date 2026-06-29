@@ -7,3 +7,6 @@ data/_*.dat
 
 # vgi-lint review cache
 .vgi-review-cache.json
+
+# Claude Code session/worktree scratch (agent worktrees, local settings)
+/.claude
