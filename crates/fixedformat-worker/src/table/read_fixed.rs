@@ -106,6 +106,13 @@ impl TableFunction for ReadFixed {
             description: "Read a fixed-width file (template / JSON / copybook spec) into rows"
                 .into(),
             tags,
+            // Opt in to projection pushdown: DuckDB then sends only the columns
+            // the query needs, the SDK narrows `producer`'s `output_schema` to
+            // them, and the producer materializes Arrow arrays for just those
+            // columns (records are still decoded in full — fixed-width offsets
+            // are sequential and OCCURS DEPENDING ON reads earlier fields — so
+            // the win is in array building, not skipping decode).
+            projection_pushdown: true,
             ..Default::default()
         }
     }
@@ -236,10 +243,23 @@ impl TableFunction for ReadFixed {
         }
         let sources = crate::reader::resolve_sources(&locations, &params.secrets, &overrides)?;
 
+        // The full set of decoded column names, in layout (decode) order. The
+        // producer maps each (possibly projection-narrowed / reordered)
+        // `output_schema` column to its decoded field BY NAME against this list,
+        // so projection pushdown places every value under the right column and
+        // only materializes the projected columns. (`params.output_schema` is
+        // already narrowed by the SDK when projection is active.)
+        let full_names: Vec<String> = output_schema(&layout)?
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+
         // Stream records: one batch is decoded per `next_batch`, so peak memory
         // is ~one batch rather than every decoded row (newline / fixed framing).
         Ok(Box::new(crate::reader::StreamingProducer::new(
             params.output_schema.clone(),
+            &full_names,
             layout,
             enc,
             framing,
@@ -247,6 +267,6 @@ impl TableFunction for ReadFixed {
             compression,
             limits,
             sources,
-        )))
+        )?))
     }
 }
