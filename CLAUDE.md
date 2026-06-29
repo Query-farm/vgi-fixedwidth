@@ -136,25 +136,42 @@ floats → `REAL`/`DOUBLE`, text/hex → `VARCHAR`, `?` → `BOOLEAN`. Encodings
 `rdw` / `rdw_blocked`.
 
 Compression (read side only — `read_fixed` + `COPY … FROM`): `compression =>`
-`auto` (default) / `none` / `gzip` / `zstd`. `auto` sniffs the buffer's magic
-bytes (`1f 8b` gzip, `28 b5 2f fd` zstd) and decompresses the whole file/object
-before framing — so it composes with every framing/encoding and works for local
-and `s3://` paths. Logic is `fixedformat-core/src/compression.rs`
-(`Compression::{parse,detect}` + `decompress`, via `flate2`/`zstd`); the worker
-applies it in `table::read_all` right after the bytes are read, and
-`options::compression` maps the named arg (`None` ⇒ auto). Writing compressed
-output is **not** supported (`write_fixed` / `COPY … TO` emit raw bytes).
+`auto` (default) / `none` / `gzip` / `zstd`. `auto` sniffs the leading magic
+bytes (`1f 8b` gzip, `28 b5 2f fd` zstd) and decompresses before framing — so it
+composes with every framing/encoding and works for local and `s3://` paths.
+`Compression::{parse,detect}` live in `fixedformat-core/src/compression.rs`
+(`decompress` is the buffered form); the **streaming** read path wraps the byte
+source with `stream::decompress_reader` (a `Read` adapter over `flate2`/`zstd`,
+peeking magic bytes via `BufRead::fill_buf` without consuming). `options::compression`
+maps the named arg (`None` ⇒ auto). Writing compressed output is **not** supported
+(`write_fixed` / `COPY … TO` emit raw bytes).
+
+Reads are **streaming** for the self-delimiting framings (`newline` / `fixed`):
+the byte source (local `File`, or a remote object fetched lazily per glob match)
+→ optional `stream::decompress_reader` → `stream::RecordStream` (the streaming
+framer) → `reader::StreamingProducer`, which decodes **one `BATCH_ROWS` batch per
+`next_batch`** so peak memory is ~one batch, not the whole file plus every decoded
+row. `rdw` / `rdw_blocked` still buffer the whole (decompressed) object inside
+`RecordStream` (length-prefix walking needs it). `COPY … FROM` drives the same
+streaming framer via `reader::read_all`, which collects (it maps columns by
+position). Streaming means a malformed record surfaces **mid-scan**: the exception
+aborts the SQL statement (so nothing partial commits), but earlier batches may
+already have been emitted — i.e. it is fail-fast per statement, not "validate the
+whole file before emitting".
 
 ## Layout
 
 - `crates/fixedformat-core` — pure codecs, **no Arrow/VGI deps** (`unsafe`
   forbidden). The Layout IR (`layout.rs`) + three parsers (`template`, `jsonspec`,
   `copybook`) + decode/encode + `packed` (COMP-3) / `zoned` / `ebcdic` (CP037
-  tables) / `framing` / `compression` (gzip/zstd input decompression). All
-  correctness lives here, unit-tested directly.
+  tables) / `framing` (slice splitter) / `stream` (streaming framer +
+  `decompress_reader`) / `compression` (gzip/zstd). All correctness lives here,
+  unit-tested directly.
 - `crates/fixedformat-worker` — thin Arrow/VGI adapter: `arrow_map.rs` (Layout →
   Arrow fields, Value → arrays incl. Decimal128/List/Struct), `value_in.rs` (Arrow
-  → Value for pack/write), `options.rs`, and `scalar/`, `table/`, `buffering/`.
+  → Value for pack/write), `reader.rs` (streaming byte sources +
+  `StreamingProducer` + the `read_all` collector), `options.rs`, and `scalar/`,
+  `table/`, `buffering/`.
   `main.rs` registers everything and calls `Worker::run()`.
 - `test/sql/*.test` — sqllogictest e2e (run via haybarn unittest). `data/` holds
   fixtures.
@@ -171,8 +188,10 @@ cargo build --release            # build the worker
 
 Test fixtures under `data/` are regenerated deterministically by
 `python3 data/generate_fixtures.py` (includes malformed fixtures for
-`malformed.test`). `read_fixed` decodes eagerly and fails fast on any malformed
-record (no partial rows).
+`malformed.test`). `read_fixed` fails fast on any malformed record — the
+exception aborts the statement (nothing partial commits). Newline/fixed reads
+stream batch-by-batch, so the error can surface after earlier batches were
+emitted; `malformed.test` asserts `statement error`, which still holds.
 
 End-to-end tests need the haybarn tooling (one-time):
 ```sh

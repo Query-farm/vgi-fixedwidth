@@ -304,6 +304,14 @@ Real copybook text — paste it straight in.
   alike. (Writing compressed output is not yet supported — `write_fixed` /
   `COPY … TO` emit raw bytes.)
 
+`read_fixed` **streams** `newline`/`fixed` files — records are framed and decoded
+a batch at a time (decompressing on the fly), so memory stays flat on large
+inputs instead of holding the whole file plus every decoded row; a multi-file
+glob reads one file at a time. `rdw`/`rdw_blocked` still buffer a whole object
+(their length-prefix walking needs it). Because reads stream, a malformed record
+deep in a file aborts the statement after earlier batches were produced — the
+failed statement returns no result, so nothing partial is committed.
+
 ---
 
 ## Recipes
