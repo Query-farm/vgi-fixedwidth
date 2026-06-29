@@ -33,7 +33,12 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # Debug-profile cache (clippy + test); distinct from the release jobs.
+      # Only write the cache from main: the repo cache is capped at 10 GB and
+      # letting every PR branch save its own would evict main's via LRU.
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -53,7 +58,12 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Share one release-profile cache with metadata-quality (both build the
+      # worker in release mode), so the dependency graph compiles once, not twice.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -80,7 +90,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Same shared release cache as the e2e job (identical release-mode deps).
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build worker (release)
         run: cargo build --release --bin fixedformat-worker
