@@ -9,9 +9,16 @@ updates:
       interval: weekly
     open-pull-requests-limit: 10
     groups:
+      # Arrow crates move in lockstep — bump them together.
       arrow:
         patterns:
           - "arrow*"
+      # Everything else: fold minor/patch bumps into one weekly PR to cut churn;
+      # majors stay individual so each breaking upgrade is reviewed on its own.
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
     commit-message:
       prefix: "deps"
 
@@ -20,5 +27,10 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    groups:
+      actions-minor-patch:
+        update-types:
+          - minor
+          - patch
     commit-message:
       prefix: "ci"

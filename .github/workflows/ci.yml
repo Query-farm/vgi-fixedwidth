@@ -105,3 +105,123 @@ jobs:
           version: "0.37.0"
           location: "${{ github.workspace }}/target/release/fixedformat-worker"
           fail-on: info
+
+  # Supply-chain advisory scan over the locked dependency tree (flate2, zstd,
+  # object_store, arrow, vgi, …). Lightweight: no compile, just reads Cargo.lock
+  # against the RustSec advisory DB, so a newly-published advisory fails CI even
+  # without a code change. Kept as its own job so an advisory hit is obvious and
+  # doesn't mask a build/test failure (or vice-versa).
+  audit:
+    name: supply-chain audit (cargo-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: cargo audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Verify the declared MSRV (rust-version = "1.90" in Cargo.toml) actually
+  # builds. The other jobs only use `@stable`, so a stable-only feature that
+  # silently raises the real minimum would otherwise slip through. `cargo check`
+  # (not a full build/test) is enough to catch a toolchain-version regression.
+  msrv:
+    name: MSRV check (rust 1.90)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (pinned MSRV)
+        uses: dtolnay/rust-toolchain@1.90
+
+      # Distinct cache key: 1.90 build artifacts are not interchangeable with the
+      # stable debug/release caches the other jobs share.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: msrv
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo check (workspace, all features)
+        run: cargo check --workspace --all-features
+
+  # Exercise the actual s3:// code path (object_store) against a real
+  # S3-compatible endpoint by standing up a MinIO server and running the gated
+  # round-trip test. The other e2e job leaves s3_roundtrip.test skipped because
+  # its FIXEDFORMAT_S3_TEST_* env vars are unset; here we set them so the test's
+  # `require-env` gate passes and the write_fixed -> read_fixed -> glob path runs
+  # for real. The test self-seeds (write_fixed creates s3://fixed/ff_roundtrip.dat
+  # then reads it back), so we only need the bucket to exist up front.
+  cloud-e2e:
+    name: cloud s3 e2e (MinIO)
+    runs-on: ubuntu-latest
+    env:
+      # Wired to the MinIO container started below; consumed by
+      # test/sql/s3_roundtrip.test via require-env + CREATE SECRET substitution.
+      FIXEDFORMAT_S3_TEST_BUCKET: fixed
+      FIXEDFORMAT_S3_TEST_ENDPOINT: localhost:9000
+      FIXEDFORMAT_S3_TEST_KEY_ID: minioadmin
+      FIXEDFORMAT_S3_TEST_SECRET: minioadmin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Share the release-profile cache with e2e/metadata-quality (same deps).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # MinIO can't run as a `services:` container: its entrypoint needs the
+      # `server /data` argument, which GitHub Actions service containers can't
+      # supply. So run it directly with `docker run`.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER="$FIXEDFORMAT_S3_TEST_KEY_ID" \
+            -e MINIO_ROOT_PASSWORD="$FIXEDFORMAT_S3_TEST_SECRET" \
+            minio/minio server /data
+
+      - name: Wait for MinIO to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf "http://$FIXEDFORMAT_S3_TEST_ENDPOINT/minio/health/live"; then
+              echo "MinIO is up"; exit 0
+            fi
+            sleep 2
+          done
+          echo "MinIO did not become ready" >&2
+          docker logs minio >&2 || true
+          exit 1
+
+      - name: Create the test bucket
+        # The s3_roundtrip test writes/reads its own object inside this bucket; we
+        # only need the bucket itself to exist. aws-cli is preinstalled on the
+        # ubuntu runner image.
+        env:
+          AWS_ACCESS_KEY_ID: ${{ env.FIXEDFORMAT_S3_TEST_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.FIXEDFORMAT_S3_TEST_SECRET }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          aws --endpoint-url "http://$FIXEDFORMAT_S3_TEST_ENDPOINT" \
+            s3 mb "s3://$FIXEDFORMAT_S3_TEST_BUCKET"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install the haybarn unittest runner
+        run: |
+          uv tool install haybarn-unittest
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install the vgi + httpfs extensions
+        # httpfs supplies DuckDB's `s3` secret type, which the test's
+        # CREATE SECRET (and its `require httpfs` gate) depends on.
+        run: |
+          echo "INSTALL vgi FROM community;" | uvx haybarn-cli
+          echo "INSTALL httpfs;" | uvx haybarn-cli
+
+      - name: Run the s3 round-trip test against MinIO
+        run: ./run_tests.sh test/sql/s3_roundtrip.test
