@@ -16,6 +16,7 @@ mod copy_from;
 mod copy_to;
 mod meta;
 mod options;
+mod reader;
 mod record_writer;
 mod scalar;
 mod table;

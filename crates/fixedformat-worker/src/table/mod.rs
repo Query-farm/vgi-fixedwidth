@@ -3,8 +3,6 @@
 mod describe_fixed;
 mod read_fixed;
 
-pub(crate) use read_fixed::read_all;
-
 use vgi::secrets::Secrets;
 use vgi::Worker;
 use vgi_rpc::{Result, RpcError};

@@ -207,7 +207,7 @@ impl CopyFromFunction for CopyFixed {
 
         // The source path may be local or a cloud URL (with secrets/overrides).
         let locations = crate::table::resolve_locations(ctx.path, &ctx.params.secrets, &overrides)?;
-        let rows = crate::table::read_all(
+        let rows = crate::reader::read_all(
             &locations,
             &layout,
             enc,

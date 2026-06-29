@@ -7,29 +7,19 @@
 
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{Schema, SchemaRef};
-use fixedformat_core::compression::Compression;
-use fixedformat_core::decode::decode_record;
-use fixedformat_core::framing::{records, Framing};
-use fixedformat_core::{Encoding, Layout, Value};
+use fixedformat_core::Layout;
 use vgi::arguments::Arguments;
-use vgi::secrets::{SecretLookup, Secrets};
+use vgi::secrets::SecretLookup;
 use vgi::table_function::{TableFunction, TableProducer};
 use vgi::{ArgSpec, BindParams, BindResponse, FunctionMetadata, ProcessParams};
-use vgi_rpc::{OutputCollector, Result, RpcError};
+use vgi_rpc::Result;
 
 use crate::arrow_map::layout_fields;
-use crate::cloud::{self, Location};
+use crate::cloud;
 use crate::options;
 
-const BATCH_ROWS: usize = 2048;
-
 pub struct ReadFixed;
-
-fn ve(e: impl std::fmt::Display) -> RpcError {
-    RpcError::value_error(e.to_string())
-}
 
 fn output_schema(layout: &Layout) -> Result<SchemaRef> {
     let fields = layout_fields(layout)?;
@@ -218,10 +208,15 @@ impl TableFunction for ReadFixed {
         let framing = options::framing(&params.arguments)?;
         let rec_len = record_length(&params.arguments, &layout);
         let compression = options::compression(&params.arguments)?;
+        // Reject `fixed` framing for a variable-length layout up front (same
+        // guard the eager `COPY … FROM` path applies).
+        crate::reader::check_variable_framing(&layout, framing)?;
 
         let paths = options::paths(&params.arguments, 0)?;
         let overrides = options::cloud_overrides(&params.arguments);
-        // Resolve each path (glob/list) to concrete locations, in order.
+        // Resolve each path (glob/list) to concrete locations, in order, then to
+        // openable sources (remote stores are built here but fetched lazily, so
+        // a multi-file glob streams one object at a time).
         let mut locations = Vec::new();
         for p in &paths {
             locations.extend(crate::table::resolve_locations(
@@ -230,98 +225,18 @@ impl TableFunction for ReadFixed {
                 &overrides,
             )?);
         }
+        let sources = crate::reader::resolve_sources(&locations, &params.secrets, &overrides)?;
 
-        let rows = read_all(
-            &locations,
-            &layout,
+        // Stream records: one batch is decoded per `next_batch`, so peak memory
+        // is ~one batch rather than every decoded row (newline / fixed framing).
+        Ok(Box::new(crate::reader::StreamingProducer::new(
+            params.output_schema.clone(),
+            layout,
             enc,
             framing,
             rec_len,
             compression,
-            &params.secrets,
-            &overrides,
-        )?;
-        Ok(Box::new(FixedProducer {
-            schema: params.output_schema.clone(),
-            rows,
-            pos: 0,
-        }))
-    }
-}
-
-/// Read and decode every record across `locations` into rows of column values.
-/// Local locations are read with `std::fs`; remote ones via the object store.
-/// Shared with the `COPY ... FROM` reader (`crate::copy_from`).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn read_all(
-    locations: &[Location],
-    layout: &Layout,
-    enc: Encoding,
-    framing: Framing,
-    rec_len: usize,
-    compression: Option<Compression>,
-    secrets: &Secrets,
-    overrides: &[(String, String)],
-) -> Result<Vec<Vec<Value>>> {
-    // A variable-length layout (OCCURS … DEPENDING ON) has no constant record
-    // size, so `fixed` framing — which chunks the stream into equal-length
-    // records — cannot delimit it. Require a self-describing framing instead.
-    if layout.variable && framing == Framing::Fixed {
-        return Err(ve(
-            "OCCURS … DEPENDING ON makes records variable-length; use framing => 'newline', \
-             'rdw', or 'rdw_blocked' (not 'fixed')",
-        ));
-    }
-
-    let mut rows = Vec::new();
-    for loc in locations {
-        let raw = match loc {
-            Location::Local(path) => {
-                std::fs::read(path).map_err(|e| ve(format!("read {path}: {e}")))?
-            }
-            Location::Remote(url) => cloud::read_object(url, secrets, overrides)?,
-        };
-        // Decompress per the `compression` option; `None` ⇒ auto-detect by magic
-        // bytes (so a plain file is passed through unchanged).
-        let codec = compression.unwrap_or_else(|| Compression::detect(&raw));
-        let data = fixedformat_core::compression::decompress(raw, codec).map_err(ve)?;
-        let recs = records(&data, framing, rec_len).map_err(ve)?;
-        for rec in recs {
-            let pairs = decode_record(layout, rec, enc).map_err(ve)?;
-            rows.push(pairs.into_iter().map(|(_, v)| v).collect());
-        }
-    }
-    Ok(rows)
-}
-
-struct FixedProducer {
-    schema: SchemaRef,
-    rows: Vec<Vec<Value>>,
-    pos: usize,
-}
-
-impl TableProducer for FixedProducer {
-    fn next_batch(&mut self, _out: &mut OutputCollector) -> Result<Option<RecordBatch>> {
-        if self.pos >= self.rows.len() {
-            return Ok(None);
-        }
-        let end = (self.pos + BATCH_ROWS).min(self.rows.len());
-        let chunk = &self.rows[self.pos..end];
-        self.pos = end;
-
-        let ncols = self.schema.fields().len();
-        let mut columns: Vec<ArrayRef> = Vec::with_capacity(ncols);
-        for (j, field) in self.schema.fields().iter().enumerate() {
-            let col: Vec<Value> = chunk
-                .iter()
-                .map(|row| row.get(j).cloned().unwrap_or(Value::Null))
-                .collect();
-            columns.push(crate::arrow_map::build_array(field.data_type(), &col)?);
-        }
-
-        Ok(Some(
-            RecordBatch::try_new(self.schema.clone(), columns)
-                .map_err(|e| RpcError::runtime_error(e.to_string()))?,
-        ))
+            sources,
+        )))
     }
 }

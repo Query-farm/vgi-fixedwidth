@@ -254,16 +254,15 @@ fn s3_options(secrets: &Secrets, url: &Url) -> Vec<(String, String)> {
     opts
 }
 
-/// Read an entire remote object into memory (matches the eager local
-/// `std::fs::read`; whole-file is required for RDW framing anyway).
-pub fn read_object(
-    url: &Url,
-    secrets: &Secrets,
-    overrides: &[(String, String)],
-) -> Result<Vec<u8>> {
-    let (store, path) = build_store(url, secrets, overrides)?;
+/// Fetch a single object's bytes from an already-built `store`. The streaming
+/// reader ([`crate::reader`]) builds the store once — which makes **no** network
+/// call — and then calls this lazily, only when it reaches that object, so a
+/// multi-file glob holds at most one object in memory at a time. `url` is used
+/// only for the error message. Whole-object reads are still required for the RDW
+/// framings (their length-prefix walking needs the full stream).
+pub fn fetch_object(store: &dyn ObjectStore, path: &ObjPath, url: &Url) -> Result<Vec<u8>> {
     let bytes = block_on(async move {
-        let r = store.get(&path).await?;
+        let r = store.get(path).await?;
         r.bytes().await
     })
     .map_err(|e| ve(format!("read {url}: {e}")))?;
@@ -613,8 +612,9 @@ mod tests {
     /// S3 endpoint records the AWS access-key id from each request's SigV4
     /// `Authorization` header; we read one object per bucket using two scoped
     /// secrets (different `key_id`s) and assert each bucket's request carried its
-    /// own access key. This exercises `read_object` → `build_store` →
-    /// `Secrets::for_scope_of_type` → object_store over real HTTP.
+    /// own access key. This exercises `build_store` → `fetch_object` →
+    /// `Secrets::for_scope_of_type` → object_store over real HTTP (the same path
+    /// the streaming reader takes per object).
     #[test]
     fn two_paths_use_two_different_secrets() {
         use std::collections::HashMap;
@@ -698,18 +698,13 @@ mod tests {
             ]),
         };
 
-        let a = read_object(
-            &Url::parse("s3://bucket-a/data.dat").unwrap(),
-            &secrets,
-            &[],
-        )
-        .unwrap();
-        let b = read_object(
-            &Url::parse("s3://bucket-b/data.dat").unwrap(),
-            &secrets,
-            &[],
-        )
-        .unwrap();
+        let fetch = |spec: &str| {
+            let url = Url::parse(spec).unwrap();
+            let (store, path) = build_store(&url, &secrets, &[]).unwrap();
+            fetch_object(store.as_ref(), &path, &url).unwrap()
+        };
+        let a = fetch("s3://bucket-a/data.dat");
+        let b = fetch("s3://bucket-b/data.dat");
         assert_eq!(a, body);
         assert_eq!(b, body);
 
