@@ -184,7 +184,11 @@ pub(crate) fn normalize_endpoint(ep: &str, use_ssl: Option<bool>) -> String {
     if ep.contains("://") {
         ep.to_string()
     } else {
-        let scheme = if use_ssl == Some(false) { "http" } else { "https" };
+        let scheme = if use_ssl == Some(false) {
+            "http"
+        } else {
+            "https"
+        };
         format!("{scheme}://{ep}")
     }
 }
@@ -208,8 +212,8 @@ pub fn build_store(
     // value for a repeated key).
     opts.extend(overrides.iter().cloned());
 
-    let (store, path) =
-        object_store::parse_url_opts(url, opts).map_err(|e| ve(format!("init store for '{url}': {e}")))?;
+    let (store, path) = object_store::parse_url_opts(url, opts)
+        .map_err(|e| ve(format!("init store for '{url}': {e}")))?;
     Ok((store, path))
 }
 
@@ -252,7 +256,11 @@ fn s3_options(secrets: &Secrets, url: &Url) -> Vec<(String, String)> {
 
 /// Read an entire remote object into memory (matches the eager local
 /// `std::fs::read`; whole-file is required for RDW framing anyway).
-pub fn read_object(url: &Url, secrets: &Secrets, overrides: &[(String, String)]) -> Result<Vec<u8>> {
+pub fn read_object(
+    url: &Url,
+    secrets: &Secrets,
+    overrides: &[(String, String)],
+) -> Result<Vec<u8>> {
     let (store, path) = build_store(url, secrets, overrides)?;
     let bytes = block_on(async move {
         let r = store.get(&path).await?;
@@ -277,7 +285,8 @@ pub fn write_object(
     }
     let (store, path) = build_store(url, secrets, overrides)?;
     let payload = PutPayload::from(body.to_vec());
-    block_on(async move { store.put(&path, payload).await }).map_err(|e| ve(format!("write {url}: {e}")))?;
+    block_on(async move { store.put(&path, payload).await })
+        .map_err(|e| ve(format!("write {url}: {e}")))?;
     Ok(())
 }
 
@@ -355,9 +364,18 @@ mod tests {
 
     #[test]
     fn classify_locals_and_remotes() {
-        assert!(matches!(classify("data/x.dat").unwrap(), Location::Local(_)));
-        assert!(matches!(classify("/abs/x.dat").unwrap(), Location::Local(_)));
-        assert!(matches!(classify("./rel*.dat").unwrap(), Location::Local(_)));
+        assert!(matches!(
+            classify("data/x.dat").unwrap(),
+            Location::Local(_)
+        ));
+        assert!(matches!(
+            classify("/abs/x.dat").unwrap(),
+            Location::Local(_)
+        ));
+        assert!(matches!(
+            classify("./rel*.dat").unwrap(),
+            Location::Local(_)
+        ));
         assert!(matches!(
             classify("s3://bucket/x.dat").unwrap(),
             Location::Remote(_)
@@ -442,11 +460,21 @@ mod tests {
         let secrets = make_secrets(&[
             (
                 "sec_a",
-                &[("type", "s3"), ("key_id", "AAA"), ("secret", "sa"), ("scope", "s3://bucket-a")],
+                &[
+                    ("type", "s3"),
+                    ("key_id", "AAA"),
+                    ("secret", "sa"),
+                    ("scope", "s3://bucket-a"),
+                ],
             ),
             (
                 "sec_b",
-                &[("type", "s3"), ("key_id", "BBB"), ("secret", "sb"), ("scope", "s3://bucket-b")],
+                &[
+                    ("type", "s3"),
+                    ("key_id", "BBB"),
+                    ("secret", "sb"),
+                    ("scope", "s3://bucket-b"),
+                ],
             ),
         ]);
         let opts_a = s3_options(&secrets, &Url::parse("s3://bucket-a/data/x.dat").unwrap());
@@ -505,8 +533,14 @@ mod tests {
 
     #[test]
     fn endpoint_scheme_is_inferred_from_use_ssl() {
-        assert_eq!(normalize_endpoint("minio:9000", Some(false)), "http://minio:9000");
-        assert_eq!(normalize_endpoint("minio:9000", Some(true)), "https://minio:9000");
+        assert_eq!(
+            normalize_endpoint("minio:9000", Some(false)),
+            "http://minio:9000"
+        );
+        assert_eq!(
+            normalize_endpoint("minio:9000", Some(true)),
+            "https://minio:9000"
+        );
         assert_eq!(normalize_endpoint("minio:9000", None), "https://minio:9000");
         assert_eq!(
             normalize_endpoint("http://already:9000", Some(true)),
@@ -520,7 +554,10 @@ mod tests {
         let Location::Remote(u) = classify("s3://bucket/data/f?.dat").unwrap() else {
             panic!("expected remote");
         };
-        assert!(u.query().is_none(), "the `?` must not become a query string");
+        assert!(
+            u.query().is_none(),
+            "the `?` must not become a query string"
+        );
         assert_eq!(remote_key(&u), "data/f?.dat");
         // `*` and `[...]` survive too, and the host is the bucket.
         let Location::Remote(u2) = classify("s3://bucket/d/f[0-9]*.dat").unwrap() else {
@@ -661,8 +698,18 @@ mod tests {
             ]),
         };
 
-        let a = read_object(&Url::parse("s3://bucket-a/data.dat").unwrap(), &secrets, &[]).unwrap();
-        let b = read_object(&Url::parse("s3://bucket-b/data.dat").unwrap(), &secrets, &[]).unwrap();
+        let a = read_object(
+            &Url::parse("s3://bucket-a/data.dat").unwrap(),
+            &secrets,
+            &[],
+        )
+        .unwrap();
+        let b = read_object(
+            &Url::parse("s3://bucket-b/data.dat").unwrap(),
+            &secrets,
+            &[],
+        )
+        .unwrap();
         assert_eq!(a, body);
         assert_eq!(b, body);
 

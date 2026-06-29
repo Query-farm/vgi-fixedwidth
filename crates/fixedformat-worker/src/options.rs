@@ -103,9 +103,10 @@ pub fn framing(args: &Arguments) -> Result<Framing> {
 pub fn cloud_overrides(args: &Arguments) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     // `use_ssl` is a BOOLEAN arg; fall back to a string form for robustness.
-    let use_ssl = args
-        .named_bool("use_ssl")
-        .or_else(|| args.named_str("use_ssl").and_then(|v| crate::cloud::parse_bool(&v)));
+    let use_ssl = args.named_bool("use_ssl").or_else(|| {
+        args.named_str("use_ssl")
+            .and_then(|v| crate::cloud::parse_bool(&v))
+    });
     if let Some(ep) = args.named_str("endpoint") {
         out.push((
             "aws_endpoint".into(),

@@ -46,7 +46,10 @@ pub(crate) fn resolve_locations(
     overrides: &[(String, String)],
 ) -> Result<Vec<Location>> {
     match cloud::classify(spec)? {
-        Location::Local(p) => Ok(resolve_local(&p)?.into_iter().map(Location::Local).collect()),
+        Location::Local(p) => Ok(resolve_local(&p)?
+            .into_iter()
+            .map(Location::Local)
+            .collect()),
         Location::Remote(url) => {
             // Check the decoded key so a `?` wildcard (URL-encoded in the key) is
             // still recognized as a glob.

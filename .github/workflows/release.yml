@@ -1,0 +1,46 @@
+# Copyright 2026 Query Farm LLC - https://query.farm
+#
+# Build the `fixedformat-worker` binary for every supported platform and attach
+# the archives (+ SHA256 + keyless cosign signature + SLSA provenance) to the
+# GitHub Release for a vX.Y.Z tag. The heavy lifting lives in the shared
+# reusable workflow Query-farm/vgi-actions/.github/workflows/rust-release.yml;
+# this file gates on the repo's own CI suite and supplies the worker-specific
+# inputs.
+#
+# Assets are named vgi-fixedformat-<tag>-<duckdb_platform>.tar.gz (linux_amd64,
+# linux_arm64, osx_amd64, osx_arm64, windows_amd64 — .tar.gz on every platform,
+# since the vgi client only reads .tar.gz). The executable inside each archive
+# is `fixedformat-worker`, used directly as a DuckDB vgi LOCATION:
+#   ATTACH 'fixed' (TYPE vgi, LOCATION '/path/to/fixedformat-worker');
+#
+# Release flow:
+#   1. Bump [workspace.package] version in Cargo.toml; sync Cargo.lock.
+#   2. git tag vX.Y.Z && git push origin vX.Y.Z
+# The reusable workflow creates the Release (idempotent) and uploads every asset.
+name: Release binaries
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  # Gate the release on the same unit + SQLLogic e2e suite as push/PR.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: [ci]
+    permissions:
+      contents: write     # create Release + upload assets
+      id-token: write     # keyless cosign sign-blob + provenance (sigstore OIDC)
+      attestations: write # SLSA build-provenance attestation
+    uses: Query-farm/vgi-actions/.github/workflows/rust-release.yml@v1
+    secrets: inherit
+    with:
+      bin: fixedformat-worker
+      asset_prefix: vgi-fixedformat
+      version_check_cmd: ci/check-version.sh

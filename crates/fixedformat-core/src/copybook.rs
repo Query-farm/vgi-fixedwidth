@@ -293,7 +293,11 @@ fn layout_nodes(nodes: &[Raw]) -> Result<(Vec<Field>, usize)> {
         // An `OCCURS … DEPENDING ON` table reserves no static footprint (the body
         // is positioned dynamically), so following siblings start right after the
         // table's offset; a fixed table advances by its full width.
-        let reserved = if node.depending_on.is_some() { 0 } else { total };
+        let reserved = if node.depending_on.is_some() {
+            0
+        } else {
+            total
+        };
         if node.redefines.is_none() {
             cursor = offset + reserved;
         }

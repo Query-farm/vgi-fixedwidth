@@ -141,7 +141,9 @@ fn decode_one(
             let ascii = to_ascii(slice, enc);
             Value::Int(parse_display_int(&ascii, *signed, *sign)?)
         }
-        FieldKind::Binary { endian, signed } => Value::Int(parse_binary_int(slice, *endian, *signed)?),
+        FieldKind::Binary { endian, signed } => {
+            Value::Int(parse_binary_int(slice, *endian, *signed)?)
+        }
         FieldKind::Float { bits, endian } => Value::Float(parse_float(slice, *bits, *endian)?),
         FieldKind::Hex { order } => Value::Text(to_hex(slice, *order)),
         FieldKind::Bool => Value::Bool(slice.iter().any(|&b| b != 0 && b != b'0')),

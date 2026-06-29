@@ -214,7 +214,11 @@ impl TableFunction for ReadFixed {
         // Resolve each path (glob/list) to concrete locations, in order.
         let mut locations = Vec::new();
         for p in &paths {
-            locations.extend(crate::table::resolve_locations(p, &params.secrets, &overrides)?);
+            locations.extend(crate::table::resolve_locations(
+                p,
+                &params.secrets,
+                &overrides,
+            )?);
         }
 
         let rows = read_all(

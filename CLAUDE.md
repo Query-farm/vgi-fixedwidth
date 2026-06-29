@@ -9,7 +9,7 @@ talks to over Apache Arrow IPC, `ATTACH 'fixed' (TYPE vgi, LOCATION '…')`) tha
 brings Perl-`unpack` / Python-`struct` / COBOL-copybook fixed-width parsing and
 formatting to SQL. Functions live under catalog `fixed`, schema `main`.
 
-Built on the published VGI Rust SDK (`vgi = "0.9.2"` from crates.io), arrow 59.
+Built on the published VGI Rust SDK (`vgi = "0.9.5"` from crates.io), arrow 59.
 Modeled on `../vgi-miint`. The repo builds standalone — no local SDK checkout
 needed.
 
@@ -88,8 +88,7 @@ both functions declare `secret_lookups()` requesting a `s3` secret **scoped to
 the URL**, and the resolved fields (`key_id`, `secret`, `session_token`,
 `region`, `endpoint`, `url_style`, `use_ssl`) are mapped onto `object_store`
 `aws_*` options. `write_fixed` getting secrets relies on the buffering
-two-phase-bind fix in the local `vgi` SDK (see the path dep in the root
-`Cargo.toml`; **repin to a published vgi before release**). Named overrides
+two-phase-bind fix in the `vgi` SDK (`>= 0.9.5`, published on crates.io). Named overrides
 `endpoint =>` / `region =>` / `url_style =>` / `use_ssl =>` (declared via
 `options::cloud_arg_specs`) win over secret-derived config — handy for MinIO
 without a `CREATE SECRET`. Example:

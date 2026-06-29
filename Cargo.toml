@@ -8,14 +8,13 @@ edition = "2021"
 rust-version = "1.90"
 license = "MIT"
 authors = ["Query Farm LLC <hello@query.farm>"]
+repository = "https://github.com/Query-farm/vgi-fixedwidth"
 
 [workspace.dependencies]
-# VGI Rust SDK (worker side). Pinned to the LOCAL checkout because it carries the
-# table-buffering two-phase secret-bind fix that write_fixed needs for cloud
-# writes and which is not yet on crates.io. ROLLOUT: repin to a published vgi
-# version (>= the one containing that fix) before releasing this worker.
+# VGI Rust SDK (worker side). Published on crates.io. 0.9.5 carries the
+# table-buffering two-phase secret-bind fix that write_fixed needs for cloud writes.
 # Keep arrow/vgi-rpc in lockstep with vgi's pins so a single arrow/vgi-rpc resolves.
-vgi = { path = "/Users/rusty/Development/vgi-rust/vgi" }
+vgi = "0.9.5"
 vgi-rpc = { version = "0.7.0", default-features = false, features = ["macros", "http"] }
 arrow = { version = "59", default-features = false, features = ["ipc"] }
 arrow-array = "59"
@@ -29,3 +28,4 @@ fixedformat-core = { path = "crates/fixedformat-core" }
 
 [profile.release]
 opt-level = 2
+strip = true

@@ -160,7 +160,10 @@ mod tests {
     fn pad_fields_omitted() {
         let layout = parse_spec("a:A2 x(3) b:A2", None).unwrap();
         let rows = describe(&layout);
-        assert_eq!(rows.iter().map(|r| r.path.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(
+            rows.iter().map(|r| r.path.as_str()).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
         // The pad still advances the offset of the field after it.
         assert_eq!(rows[1].offset, 5);
     }

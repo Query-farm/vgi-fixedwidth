@@ -22,11 +22,26 @@ SELECT unpack_fixed('JOHN      00042', 'name:A10 qty:9(5)');
 
 ## Quick start
 
-**1. Build the worker** (needs Rust 1.86+):
+**1. Get the worker binary.** Either download a prebuilt archive from the
+[Releases page](https://github.com/Query-farm/vgi-fixedwidth/releases) for your
+platform (`vgi-fixedformat-<version>-<platform>.tar.gz`, where `<platform>` is
+one of `linux_amd64`, `linux_arm64`, `osx_amd64`, `osx_arm64`, `windows_amd64`)
+and unpack the `fixedformat-worker` executable…
+
+```sh
+tar -xzf vgi-fixedformat-v0.1.0-osx_arm64.tar.gz   # → fixedformat-worker
+```
+
+…or build it from source (needs Rust 1.90+):
 
 ```sh
 cargo build --release          # produces target/release/fixedformat-worker
 ```
+
+Each release archive is accompanied by a SHA256 checksum, a keyless `cosign`
+signature (`.cosign.bundle`), and a SLSA build-provenance attestation — see the
+[release-tooling docs](https://github.com/Query-farm/vgi-actions) for the verify
+recipe.
 
 **2. Attach it in DuckDB** (any DuckDB with the `vgi` community extension):
 
@@ -364,7 +379,7 @@ python3 data/generate_fixtures.py  # regenerate test fixtures
 
 Coverage: 73 `fixedformat-core` unit tests, a `proptest` suite proving
 `decode(encode(v)) == v` across every field kind (ASCII + EBCDIC), and 13 SQLLogic
-files (230+ assertions) covering every function, spec format, framing mode, nested
+files (160+ test directives) covering every function, spec format, framing mode, nested
 and variable-length (`OCCURS … DEPENDING ON`) records, NULL handling, and
 malformed-input behavior. Binary decoding is cross-checked against Python
 `struct.pack` reference bytes.

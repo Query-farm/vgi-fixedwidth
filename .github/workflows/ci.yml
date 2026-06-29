@@ -5,9 +5,16 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Allow release.yml to run this exact suite as a gating `uses:` job before it
+  # publishes anything.
+  workflow_call:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # Include github.workflow so a direct CI run and the `uses:`-embedded CI job of
+  # release.yml land in DISTINCT groups. Sharing one group would make the
+  # tag-triggered release caller cancel an in-flight CI run (cancel-in-progress).
+  # In a reusable workflow github.workflow resolves to the CALLER.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:

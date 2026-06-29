@@ -48,7 +48,10 @@ impl CopyFromFunction for CopyFixed {
     }
 
     fn comment(&self) -> Option<String> {
-        Some("Load a fixed-width / flat-file / COBOL-copybook file into the COPY target table".into())
+        Some(
+            "Load a fixed-width / flat-file / COBOL-copybook file into the COPY target table"
+                .into(),
+        )
     }
 
     fn metadata(&self) -> FunctionMetadata {
@@ -145,7 +148,11 @@ impl CopyFromFunction for CopyFixed {
             .collect()
     }
 
-    fn read(&self, ctx: &CopyFromReadContext, _out: &mut OutputCollector) -> Result<Vec<RecordBatch>> {
+    fn read(
+        &self,
+        ctx: &CopyFromReadContext,
+        _out: &mut OutputCollector,
+    ) -> Result<Vec<RecordBatch>> {
         let spec = ctx
             .options
             .named_str("spec")

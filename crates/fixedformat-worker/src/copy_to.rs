@@ -65,9 +65,7 @@ impl CopyToFunction for CopyToFixed {
     }
 
     fn comment(&self) -> Option<String> {
-        Some(
-            "Write the COPY source out to a fixed-width / flat-file / COBOL-copybook file".into(),
-        )
+        Some("Write the COPY source out to a fixed-width / flat-file / COBOL-copybook file".into())
     }
 
     fn metadata(&self) -> FunctionMetadata {
