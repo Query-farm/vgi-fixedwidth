@@ -66,7 +66,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
 
       - name: Install the haybarn unittest runner
         # Only `haybarn-unittest` is installed as a tool; `haybarn-cli` (used to
@@ -209,7 +209,7 @@ jobs:
             s3 mb "s3://$FIXEDFORMAT_S3_TEST_BUCKET"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
 
       - name: Install the haybarn unittest runner
         run: |
