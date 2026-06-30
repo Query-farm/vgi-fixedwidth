@@ -65,8 +65,9 @@ directory).
 - **Not yet supported:** `COPY … TO` does not forward `CREATE SECRET` credentials
   (use `write_fixed`/`write_multi` for secret-backed cloud writes); `http(s)://`
   is **read-only** (single object — no globbing); encodings are ASCII and EBCDIC
-  CP037 only (no Latin-1 / UTF-16 / other code pages yet); `unpack`/`describe`/
-  `COPY FROM` have no multi-record-type counterpart yet (use `read_multi`).
+  CP037 only (no Latin-1 / UTF-16 / other code pages yet); `describe` and
+  `COPY FROM` have no multi-record-type counterpart yet (use `read_multi` /
+  `unpack_multi`).
 - **Safety caps (untrusted input):** decompression is bounded by
   `max_decompressed_bytes` (16 GiB default; gzip/zstd only) to stop a
   decompression bomb, a single record by 512 MiB, and `DECIMAL` precision by 38.
@@ -80,6 +81,7 @@ directory).
 | Function | Shape | What it does |
 |----------|-------|--------------|
 | `unpack_fixed(rec, spec [, encoding])` | scalar → STRUCT | Parse one VARCHAR/BLOB record into a struct of fields |
+| `unpack_multi(rec, spec [, encoding])` | scalar → UNION | Parse one heterogeneous record into a `UNION` (scalar `read_multi`) |
 | `pack_fixed(struct, spec [, encoding])` | scalar → BLOB | Format a struct back into a fixed-width record |
 | `read_fixed(path, spec [, options…])` | table function | Read a whole fixed-width file into rows |
 | `read_multi(path, spec [, options…])` | table function | Read a heterogeneous (multi-record-type) file into a `UNION` column |

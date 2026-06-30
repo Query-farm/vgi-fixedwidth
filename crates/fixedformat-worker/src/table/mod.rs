@@ -2,7 +2,7 @@
 
 mod describe_fixed;
 mod read_fixed;
-mod read_multi;
+pub(crate) mod read_multi;
 
 use vgi::secrets::Secrets;
 use vgi::Worker;

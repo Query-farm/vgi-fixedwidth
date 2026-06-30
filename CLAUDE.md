@@ -49,8 +49,10 @@ needed.
   longest variant's static length) and is rejected for variable-length (OCCURS
   DEPENDING ON) variants. An unmatched discriminator value is a hard error unless the
   spec gives a `default` tag. `path` may glob / be `s3://`/`http(s)://` like
-  `read_fixed`. No COPY-FROM or scalar (`unpack_multi`) counterpart yet, and
-  `describe_fixed` does not (yet) accept multi-record specs.
+  `read_fixed`. The scalar `unpack_multi(rec, spec [, encoding])` decodes ONE record
+  to a UNION value (same sparse-union build, shared via `table::read_multi::{multi_layout,
+  union_fields, build_union_array}`). No COPY-FROM counterpart yet, and `describe_fixed`
+  does not (yet) accept multi-record specs.
 - `fixed.main.write_fixed((FROM rel), path, spec [, format =>, encoding =>, framing =>])`
   — write a relation to a fixed-width file (table-buffering sink); returns
   `(rows_written, bytes_written)`.

@@ -1,0 +1,53 @@
+# name: test/sql/unpack_multi.test
+# description: unpack_multi — decode one heterogeneous record into a UNION value
+#              (the scalar counterpart of read_multi).
+# group: [sql]
+
+require-env VGI_TEST_WORKER
+
+statement ok
+ATTACH 'fixed' AS fixed (TYPE vgi, LOCATION '${VGI_TEST_WORKER}');
+
+statement ok
+SET search_path='fixed.main';
+
+# A 'D' (detail) record: 1-byte discriminator + sku X(10) + qty 9(5).
+query TI
+SELECT union_tag(u) AS kind, union_extract(u, 'D').qty AS qty
+FROM (SELECT unpack_multi('DWIDGET    00042',
+  '{"discriminator":{"offset":0,"width":1},
+    "records":{
+      "H":[{"type":"pad","width":1},{"name":"co","type":"str","width":20}],
+      "D":[{"type":"pad","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5}]
+    }}') AS u);
+----
+D	42
+
+# A 'H' (header) record picks the other variant; the detail extract is NULL.
+query TT
+SELECT union_tag(u) AS kind, union_extract(u, 'H').co AS co
+FROM (SELECT unpack_multi('HACME CORP                    ',
+  '{"discriminator":{"offset":0,"width":1},
+    "records":{
+      "H":[{"type":"pad","width":1},{"name":"co","type":"str","width":20}],
+      "D":[{"type":"pad","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5}]
+    }}') AS u);
+----
+H	ACME CORP
+
+# The output really is a UNION type.
+query T
+SELECT typeof(unpack_multi('DWIDGET    00042',
+  '{"discriminator":{"offset":0,"width":1},
+    "records":{"D":[{"type":"pad","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5}]}}'))
+LIKE 'UNION(%';
+----
+true
+
+# An unmatched discriminator (no 'Z' variant, no default) is a hard error.
+statement error
+SELECT unpack_multi('ZJUNK',
+  '{"discriminator":{"offset":0,"width":1},
+    "records":{"D":[{"type":"pad","width":1},{"name":"x","type":"str","width":4}]}}');
+----
+no matching variant

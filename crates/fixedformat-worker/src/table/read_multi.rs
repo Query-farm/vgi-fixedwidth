@@ -35,8 +35,9 @@ pub struct ReadMulti;
 /// DuckDB sparse-union type-ids are `i8`, so the number of record types is bounded.
 const MAX_VARIANTS: usize = i8::MAX as usize;
 
-/// Parse the multi-record spec from the const arg at position 1.
-fn multi_layout(args: &Arguments) -> Result<MultiLayout> {
+/// Parse the multi-record spec from the const arg at position 1. Shared with the
+/// scalar `unpack_multi`.
+pub(crate) fn multi_layout(args: &Arguments) -> Result<MultiLayout> {
     let spec = args
         .const_str(1)
         .ok_or_else(|| ve("a multi-record layout spec string is required"))?;
@@ -45,7 +46,8 @@ fn multi_layout(args: &Arguments) -> Result<MultiLayout> {
 
 /// The Arrow [`UnionFields`] for a multi-record layout: one STRUCT child per
 /// record type (named by its tag), with type-ids `0..N` in declaration order.
-fn union_fields(ml: &MultiLayout) -> Result<UnionFields> {
+/// Shared with the scalar `unpack_multi`.
+pub(crate) fn union_fields(ml: &MultiLayout) -> Result<UnionFields> {
     if ml.variants.len() > MAX_VARIANTS {
         return Err(ve(format!(
             "a multi-record spec may declare at most {MAX_VARIANTS} record types (got {})",
@@ -299,36 +301,45 @@ impl MultiProducer {
     /// `UnionArray`: every variant's child is full length (`rows.len()`), holding
     /// the decoded struct on its active rows and NULL elsewhere.
     fn build_union_batch(&self, rows: Vec<(usize, Value)>) -> Result<RecordBatch> {
-        let nrows = rows.len();
-        let nvariants = self.uf.len();
-        let mut type_ids: Vec<i8> = Vec::with_capacity(nrows);
-        let mut per_variant: Vec<Vec<Value>> =
-            (0..nvariants).map(|_| Vec::with_capacity(nrows)).collect();
-        for (vidx, val) in rows {
-            type_ids.push(vidx as i8);
-            // Sparse union: append a slot to EVERY variant child, then drop the
-            // decoded struct into the active one (others stay NULL).
-            for col in per_variant.iter_mut() {
-                col.push(Value::Null);
-            }
-            if let Some(slot) = per_variant[vidx].last_mut() {
-                *slot = val;
-            }
-        }
-        let mut children: Vec<ArrayRef> = Vec::with_capacity(nvariants);
-        for ((_, field), col) in self.uf.iter().zip(&per_variant) {
-            children.push(arrow_map::build_array(field.data_type(), col)?);
-        }
-        let arr = UnionArray::try_new(
-            self.uf.clone(),
-            ScalarBuffer::from(type_ids),
-            None, // sparse: no value-offsets
-            children,
-        )
-        .map_err(|e| RpcError::runtime_error(e.to_string()))?;
+        let arr = build_union_array(&self.uf, rows)?;
         RecordBatch::try_new(self.schema.clone(), vec![Arc::new(arr)])
             .map_err(|e| RpcError::runtime_error(e.to_string()))
     }
+}
+
+/// Assemble decoded `(variant index, struct value)` rows into a sparse
+/// `UnionArray` per `uf`: every variant's child is full length (`rows.len()`),
+/// holding the decoded struct on its active rows and NULL elsewhere, with a
+/// per-row `type_ids` buffer naming the active variant. Shared by `read_multi`'s
+/// streaming producer and the scalar `unpack_multi`.
+pub(crate) fn build_union_array(uf: &UnionFields, rows: Vec<(usize, Value)>) -> Result<UnionArray> {
+    let nrows = rows.len();
+    let nvariants = uf.len();
+    let mut type_ids: Vec<i8> = Vec::with_capacity(nrows);
+    let mut per_variant: Vec<Vec<Value>> =
+        (0..nvariants).map(|_| Vec::with_capacity(nrows)).collect();
+    for (vidx, val) in rows {
+        type_ids.push(vidx as i8);
+        // Sparse union: append a slot to EVERY variant child, then drop the
+        // decoded struct into the active one (others stay NULL).
+        for col in per_variant.iter_mut() {
+            col.push(Value::Null);
+        }
+        if let Some(slot) = per_variant[vidx].last_mut() {
+            *slot = val;
+        }
+    }
+    let mut children: Vec<ArrayRef> = Vec::with_capacity(nvariants);
+    for ((_, field), col) in uf.iter().zip(&per_variant) {
+        children.push(arrow_map::build_array(field.data_type(), col)?);
+    }
+    UnionArray::try_new(
+        uf.clone(),
+        ScalarBuffer::from(type_ids),
+        None, // sparse: no value-offsets
+        children,
+    )
+    .map_err(|e| RpcError::runtime_error(e.to_string()))
 }
 
 impl TableProducer for MultiProducer {

@@ -2,6 +2,7 @@
 
 mod pack;
 mod unpack;
+mod unpack_multi;
 mod version;
 
 use vgi::Worker;
@@ -21,6 +22,12 @@ pub fn register(worker: &mut Worker) {
         with_encoding: false,
     });
     worker.register_scalar(pack::Pack {
+        with_encoding: true,
+    });
+    worker.register_scalar(unpack_multi::UnpackMulti {
+        with_encoding: false,
+    });
+    worker.register_scalar(unpack_multi::UnpackMulti {
         with_encoding: true,
     });
 }
