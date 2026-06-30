@@ -4,6 +4,20 @@ All notable changes to `vgi-fixedformat` are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] — write & cloud
+
+### Added
+- **Write-side compression**: `write_fixed` / `COPY … TO` now emit gzip/zstd —
+  `compression =>` `auto` (default: gzip for `.gz`, zstd for `.zst`, else raw) /
+  `none` / `gzip` / `zstd`. (Replaces the previous "reject a compressed
+  destination" guard.)
+- **`write_multi`**: the inverse of `read_multi` — write a relation whose single
+  column is a `UNION` back out to a heterogeneous multi-record-type file
+  (stamps the discriminator + encodes each row with its variant layout).
+- **True S3/HTTP byte-streaming**: remote objects are now read in 8 MiB byte
+  ranges on demand instead of being fetched whole, so a large object streams with
+  bounded memory (≈ one chunk + one batch) for newline/fixed framing.
+
 ## [0.5.0] — functionality
 
 ### Added
