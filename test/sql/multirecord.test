@@ -1,0 +1,76 @@
+# name: test/sql/multirecord.test
+# description: read_multi — heterogeneous flat file decoded to a UNION column,
+#              one STRUCT variant per record type selected by a discriminator.
+#              Does NOT set search_path (read_multi is a table function in the
+#              read-only worker catalog); calls are fully qualified.
+# group: [sql]
+
+require-env VGI_TEST_WORKER
+
+statement ok
+ATTACH 'fixed' AS fixed (TYPE vgi, LOCATION '${VGI_TEST_WORKER}');
+
+# The multi-record JSON spec: a 1-byte discriminator at offset 0 selects one of
+# three variant layouts (each leads with a 1-byte filler covering the tag byte).
+# H = header (co), D = detail (sku, qty), T = trailer (cnt).
+
+# The output column `record` is a sparse UNION with one STRUCT variant per record
+# type; the variant names are the discriminator tags.
+query T
+SELECT DISTINCT typeof(record) FROM fixed.main.read_multi('data/multi.dat',
+    '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}],"D":[{"type":"filler","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5}],"T":[{"type":"filler","width":1},{"name":"cnt","type":"int","digits":6}]}}');
+----
+UNION(H STRUCT(co VARCHAR), D STRUCT(sku VARCHAR, qty BIGINT), T STRUCT(cnt BIGINT))
+
+# union_tag(record) gives each row's record type, in file order (H, D, D, T).
+query T
+SELECT union_tag(record) FROM fixed.main.read_multi('data/multi.dat',
+    '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}],"D":[{"type":"filler","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5}],"T":[{"type":"filler","width":1},{"name":"cnt","type":"int","digits":6}]}}');
+----
+H
+D
+D
+T
+
+# union_extract(record, 'D') pulls the detail STRUCT; project its fields.
+query TI
+SELECT union_extract(record, 'D').sku, union_extract(record, 'D').qty
+FROM fixed.main.read_multi('data/multi.dat',
+    '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}],"D":[{"type":"filler","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5}],"T":[{"type":"filler","width":1},{"name":"cnt","type":"int","digits":6}]}}')
+WHERE union_tag(record) = 'D'
+ORDER BY 2;
+----
+GADGET	7
+WIDGET	42
+
+# The header and trailer variants extract from their own STRUCTs.
+query TI
+SELECT union_extract(record, 'H').co, union_extract(record, 'T').cnt
+FROM fixed.main.read_multi('data/multi.dat',
+    '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}],"D":[{"type":"filler","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5}],"T":[{"type":"filler","width":1},{"name":"cnt","type":"int","digits":6}]}}')
+WHERE union_tag(record) IN ('H', 'T')
+ORDER BY union_tag(record);
+----
+ACME CORP	NULL
+NULL	2
+
+# An unknown discriminator value (record type 'Z', not in the spec, no default)
+# is a hard error naming the bad tag.
+statement error
+SELECT count(*) FROM fixed.main.read_multi('data/multi_bad.dat',
+    '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}],"D":[{"type":"filler","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5}],"T":[{"type":"filler","width":1},{"name":"cnt","type":"int","digits":6}]}}');
+----
+unknown record type
+
+# With a `default` tag, an unmatched record falls back to that variant instead of
+# erroring — the 'Z' record decodes as a detail (D), sku = MYSTERY.
+query TT
+SELECT union_tag(record), union_extract(record, 'D').sku
+FROM fixed.main.read_multi('data/multi_bad.dat',
+    '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}],"D":[{"type":"filler","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5}],"T":[{"type":"filler","width":1},{"name":"cnt","type":"int","digits":6}]},"default":"D"}')
+WHERE union_tag(record) = 'D'
+ORDER BY 2;
+----
+D	GADGET
+D	MYSTERY
+D	WIDGET

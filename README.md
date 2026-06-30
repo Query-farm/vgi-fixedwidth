@@ -82,6 +82,7 @@ directory).
 | `unpack_fixed(rec, spec [, encoding])` | scalar → STRUCT | Parse one VARCHAR/BLOB record into a struct of fields |
 | `pack_fixed(struct, spec [, encoding])` | scalar → BLOB | Format a struct back into a fixed-width record |
 | `read_fixed(path, spec [, options…])` | table function | Read a whole fixed-width file into rows |
+| `read_multi(path, spec [, options…])` | table function | Read a heterogeneous (multi-record-type) file into a `UNION` column |
 | `write_fixed((FROM rel), path, spec [, options…])` | table function | Write a relation out to a fixed-width file |
 | `describe_fixed(spec [, format =>])` | table function | Introspect a spec (fields, types, offsets) without reading data |
 
@@ -134,6 +135,47 @@ SELECT * FROM read_fixed('s3://bucket/big.dat.zst', 'name:A10 qty:9(5)');      -
 Override detection with `compression =>` `'auto'` (default), `'none'`, `'gzip'`,
 or `'zstd'` — use `'none'` to force raw bytes, or name a codec for a file whose
 extension doesn't match.
+
+### `read_multi` — read a heterogeneous (multi-record-type) file
+
+Real flat files are often heterogeneous: a **header** record, many **detail**
+records, a **trailer** — each a *different* layout, picked by a "record type"
+discriminator field (e.g. byte 0 = `H` / `D` / `T`). `read_multi` decodes each
+record with the layout chosen by its discriminator and returns a single column
+`record` of type **`UNION`** — one `STRUCT` variant per record type, the variant
+names being the discriminator values.
+
+The `spec` is a JSON object: a `discriminator` (`{offset, width}` — the bytes that
+identify each record's type) plus a `records` map of tag → field list (each field
+list uses the **same JSON field syntax** as `read_fixed`'s JSON spec, so every
+field type / group / OCCURS works per record type). An optional `default` tag
+handles values that match no record type (otherwise an unmatched value is a hard
+error). Note the discriminator bytes are part of each record's bytes, so a variant
+usually leads with a 1-byte `filler` covering the tag.
+
+```sql
+SELECT
+  union_tag(record)               AS kind,           -- 'H' / 'D' / 'T'
+  union_extract(record, 'D').sku  AS sku,            -- the detail STRUCT's fields
+  union_extract(record, 'D').qty  AS qty
+FROM read_multi('data/multi.dat', '{
+  "discriminator": {"offset": 0, "width": 1},
+  "records": {
+    "H": [{"type":"filler","width":1}, {"name":"co","type":"str","width":20}],
+    "D": [{"type":"filler","width":1}, {"name":"sku","type":"str","width":10},
+          {"name":"qty","type":"int","digits":5}],
+    "T": [{"type":"filler","width":1}, {"name":"cnt","type":"int","digits":6}]
+  }
+}')
+WHERE union_tag(record) = 'D';
+```
+
+`typeof(record)` is
+`UNION(H STRUCT(co VARCHAR), D STRUCT(sku VARCHAR, qty BIGINT), T STRUCT(cnt BIGINT))`.
+Options are **named**: `encoding`, `framing` (`newline` default / `fixed` / `rdw` /
+`rdw_blocked`), `record_length` (for `fixed` framing — every record type padded to a
+common length; defaults to the longest variant), and `compression`. `path` may glob
+or be a cloud URL, exactly like `read_fixed`.
 
 ### `write_fixed` — write a file
 

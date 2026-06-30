@@ -2,6 +2,7 @@
 
 mod describe_fixed;
 mod read_fixed;
+mod read_multi;
 
 use vgi::secrets::Secrets;
 use vgi::Worker;
@@ -12,6 +13,7 @@ use crate::cloud::{self, Location};
 /// Register every table function on the worker.
 pub fn register(worker: &mut Worker) {
     worker.register_table(read_fixed::ReadFixed);
+    worker.register_table(read_multi::ReadMulti);
     worker.register_table(describe_fixed::DescribeFixed);
 }
 
