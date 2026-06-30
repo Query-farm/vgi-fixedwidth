@@ -15,6 +15,7 @@ pub mod encode;
 pub mod framing;
 pub mod jsonspec;
 pub mod layout;
+pub mod multirecord;
 pub mod packed;
 pub mod stream;
 pub mod template;

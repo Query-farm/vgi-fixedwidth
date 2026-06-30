@@ -97,4 +97,22 @@ write("ragged_fb.dat", b"AAA00BB")
 # Each record's length varies with N, so it needs newline (or RDW) framing.
 write("odo.dat", b"2AABBEND\n1XYEND\n0ZZZ\n")
 
+# --- multi-record-type file (for test/sql/multirecord.test) ---
+# Newline-delimited; a 1-byte discriminator at offset 0 selects the layout:
+#   H = header : co X(20)
+#   D = detail : sku X(10) + qty 9(5)
+#   T = trailer: count 9(6)
+# The whole record (including the discriminator byte) is the layout's bytes, so
+# each variant's first field starts at byte 0 and overlaps the 1-byte tag.
+multi = b""
+multi += b"H" + b"ACME CORP".ljust(20)[:20] + b"\n"
+multi += b"D" + b"WIDGET".ljust(10)[:10] + b"00042" + b"\n"
+multi += b"D" + b"GADGET".ljust(10)[:10] + b"00007" + b"\n"
+multi += b"T" + b"000002" + b"\n"
+write("multi.dat", multi)
+
+# Same shape plus an UNKNOWN record type 'Z' (detail-shaped: 1 + 10 + 5 bytes) to
+# exercise both the hard error (no default) and the `default` fallback.
+write("multi_bad.dat", multi + b"Z" + b"MYSTERY".ljust(10)[:10] + b"00099" + b"\n")
+
 print("done")

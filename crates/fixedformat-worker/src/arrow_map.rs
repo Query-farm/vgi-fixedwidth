@@ -33,6 +33,15 @@ pub fn layout_fields(layout: &Layout) -> Result<Fields> {
     Ok(Fields::from(out))
 }
 
+/// The Arrow STRUCT type for a whole layout's top-level (non-pad) fields. Used as
+/// a `read_multi` union variant — each record type becomes a STRUCT variant whose
+/// children are the variant layout's columns. `build_array` already turns a column
+/// of `Value::Struct` into the matching `StructArray`, so no extra builder is
+/// needed on the value side.
+pub fn layout_struct_type(layout: &Layout) -> Result<DataType> {
+    Ok(DataType::Struct(layout_fields(layout)?))
+}
+
 /// The Arrow `Field` for one layout field (wrapping in `List` for OCCURS).
 fn arrow_field(f: &Field) -> Result<ArrowField> {
     let base = base_type(f)?;

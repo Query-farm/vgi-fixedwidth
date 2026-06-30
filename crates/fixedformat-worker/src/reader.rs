@@ -42,7 +42,12 @@ fn ve(e: impl std::fmt::Display) -> RpcError {
 
 /// The concrete record iterator: a streaming framer over a (possibly
 /// decompressed) boxed byte source.
-type RecordIter = RecordStream<BufReader<Box<dyn Read + Send>>>;
+pub(crate) type RecordIter = RecordStream<BufReader<Box<dyn Read + Send>>>;
+
+/// Map a `Display` error into a value error. Shared with `read_multi`.
+pub(crate) fn read_ve(e: impl std::fmt::Display) -> RpcError {
+    ve(e)
+}
 
 /// A resolved byte source ready to open: a local file path, or a remote object
 /// addressed by a pre-built object store + key. The store is constructed when
@@ -59,7 +64,7 @@ pub(crate) enum Source {
 
 impl Source {
     /// A short human label for this source, used to locate a failing record.
-    fn label(&self) -> &str {
+    pub(crate) fn label(&self) -> &str {
         match self {
             Source::Local(p) => p,
             Source::Remote { url, .. } => url.as_str(),
@@ -122,7 +127,7 @@ pub(crate) fn check_variable_framing(layout: &Layout, framing: Framing) -> Resul
 
 /// Open a streaming record iterator over one source: decompress (auto-detected
 /// when `compression` is `None`) then frame per `framing`.
-fn open_stream(
+pub(crate) fn open_stream(
     source: &Source,
     framing: Framing,
     rec_len: usize,

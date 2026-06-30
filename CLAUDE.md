@@ -26,6 +26,31 @@ needed.
   — scan a fixed-width file (table function; `path` may glob). `compression =>`
   is `auto` (default; gzip/zstd detected by magic bytes) / `none` / `gzip` /
   `zstd` — decompressed before framing, local or `s3://` alike.
+- `fixed.main.read_multi(path, spec [, encoding =>, framing =>, record_length =>, compression =>])`
+  — scan a **heterogeneous** flat file whose records have different layouts selected
+  by a discriminator field (header/detail/trailer), returning a single column
+  `record` of Arrow **sparse Union** (DuckDB `UNION(H STRUCT(…), D STRUCT(…), …)`).
+  Table function in `crates/fixedformat-worker/src/table/read_multi.rs`; core spec +
+  variant selection in `crates/fixedformat-core/src/multirecord.rs`. The `spec` is a
+  **multi-record JSON** object (see Spec formats below). Each framed record's
+  discriminator bytes pick a variant `Layout` (`MultiLayout::select`); the record is
+  decoded with that variant via the ordinary `decode_record`, wrapped in a
+  `Value::Struct`, and the batch is built as a **sparse `UnionArray`** — each
+  variant's child `StructArray` is **full batch length**, holding the decoded struct
+  on its active rows and NULL on all others, with a per-row `type_ids` buffer (0..N,
+  one per `records` entry in order) naming the active variant. Variant (union child)
+  names are the discriminator tags. `union_tag(record)` gives the record type;
+  `union_extract(record, 'D')` pulls the detail struct. Reuses the streaming
+  source/framing/decompression machinery from `read_fixed` (`reader::{Source,
+  open_stream, resolve_sources}`) and the `arrow_map` Layout→Arrow helpers
+  (`layout_struct_type` builds each variant's STRUCT type). Framings: `newline`
+  (default), `rdw`, `rdw_blocked` fully supported; `fixed` works too (one
+  `record_length` for all types — records padded to a common length; defaults to the
+  longest variant's static length) and is rejected for variable-length (OCCURS
+  DEPENDING ON) variants. An unmatched discriminator value is a hard error unless the
+  spec gives a `default` tag. `path` may glob / be `s3://`/`http(s)://` like
+  `read_fixed`. No COPY-FROM or scalar (`unpack_multi`) counterpart yet, and
+  `describe_fixed` does not (yet) accept multi-record specs.
 - `fixed.main.write_fixed((FROM rel), path, spec [, format =>, encoding =>, framing =>])`
   — write a relation to a fixed-width file (table-buffering sink); returns
   `(rows_written, bytes_written)`.
@@ -115,6 +140,17 @@ SELECT * FROM fixed.main.read_fixed('s3://bucket/x.dat', 'A10 N',
   and with `"occurs"` → a LIST of STRUCT. So nested/repeating sub-records are
   expressible without a copybook (`jsonspec::layout_fields` recurses; children get
   group-relative offsets, same contract as copybook's `layout_nodes`).
+- **multi-record** (`read_multi` only) — a JSON object selecting a per-record layout
+  by a discriminator: `{"discriminator":{"offset","width"}, "records":{"H":[…],"D":
+  […],"T":[…]}, "default":"D"?}`. Each `records` value is an ordinary **json** field
+  list (reused verbatim via `jsonspec::parse`, so all field types / groups / OCCURS
+  work per variant). `MultiLayout::parse` preserves the `records` order (stable union
+  type-ids); `MultiLayout::select(record, enc)` reads + trims the discriminator bytes
+  (EBCDIC-transcoded first), matches case-sensitively against the tags, else falls
+  back to `default` (else errors). The discriminator bytes are part of each record's
+  bytes, so a variant usually leads with a 1-byte `filler` covering the tag. Output is
+  a `UNION` column (one STRUCT variant per record type), **not** the flat dynamic
+  columns `read_fixed` produces.
 - **copybook** — COBOL: nested groups (→ STRUCT), `PIC X/A/9/S/V`, `USAGE
   COMP-3`/`COMP`/`BINARY`, `OCCURS n` (→ LIST), `OCCURS [m TO] n DEPENDING ON ctrl`
   (variable-length table → LIST sized by the runtime value of `ctrl`), `REDEFINES`
