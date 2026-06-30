@@ -84,6 +84,7 @@ directory).
 | `read_fixed(path, spec [, options…])` | table function | Read a whole fixed-width file into rows |
 | `read_multi(path, spec [, options…])` | table function | Read a heterogeneous (multi-record-type) file into a `UNION` column |
 | `write_fixed((FROM rel), path, spec [, options…])` | table function | Write a relation out to a fixed-width file |
+| `write_multi((FROM rel), path, spec [, options…])` | table function | Write a single-`UNION`-column relation back out to a heterogeneous (multi-record-type) file |
 | `describe_fixed(spec [, format =>])` | table function | Introspect a spec (fields, types, offsets) without reading data |
 
 `pack_fixed` is the exact inverse of `unpack_fixed`:
@@ -186,6 +187,35 @@ input relation as a subquery `(FROM …)`:
 SELECT * FROM write_fixed((FROM my_table), '/tmp/out.dat', 'name:A10 qty:9(5)');
 -- returns one row: (rows_written, bytes_written)
 ```
+
+### `write_multi` — write a heterogeneous (multi-record-type) file
+
+`write_multi` is the inverse of [`read_multi`](#read_multi--read-a-heterogeneous-multi-record-type-file):
+it writes a relation whose **single column is a `UNION`** (the exact shape
+`read_multi` emits) back out to a heterogeneous flat file. Each row's active
+variant gives its record type (the union tag) and its `STRUCT` field values; the
+matching variant layout encodes those fields and the discriminator field is
+stamped with the tag. It is a **table function**, so call it in a `FROM` clause
+with the input relation as a subquery `(FROM …)`, using the **same** multi-record
+JSON spec as `read_multi`:
+
+```sql
+SELECT * FROM write_multi(
+  (FROM read_multi('data/multi.dat', '{ "discriminator": {"offset":0,"width":1},
+     "records": { "H": [...], "D": [...], "T": [...] } }')),
+  '/tmp/out.dat',
+  '{ "discriminator": {"offset":0,"width":1},
+     "records": { "H": [...], "D": [...], "T": [...] } }');
+-- returns one row: (rows_written, bytes_written)
+```
+
+The input relation must have exactly one column, a `UNION` whose variant names
+match the spec's discriminator tags. Optional NAMED args mirror `write_fixed`:
+`encoding =>` (`ascii`/`ebcdic`), `framing =>`
+(`newline`/`fixed`/`rdw`/`rdw_blocked`), and `compression =>`. As with
+`read_multi`, the discriminator must sit at a fixed offset before any
+`OCCURS … DEPENDING ON` table, and `fixed` framing only aligns when every variant
+is padded to a common length.
 
 ### `describe_fixed` — introspect a spec
 

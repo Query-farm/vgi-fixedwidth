@@ -134,6 +134,31 @@ impl MultiLayout {
         })
     }
 
+    /// Find the [`Layout`] for a record-type `tag` (case-sensitive, matching the
+    /// `records` keys). Returns `None` if no variant carries that tag. Used by
+    /// `write_multi` to pick the layout to encode a UNION row with.
+    pub fn variant(&self, tag: &str) -> Option<&Layout> {
+        self.variants.iter().find(|(t, _)| t == tag).map(|(_, l)| l)
+    }
+
+    /// Encode a record-type `tag` into the discriminator field's bytes: the tag is
+    /// written left-justified and space-padded (or truncated) to the discriminator
+    /// width, then transcoded to `enc`. The inverse of the read-side
+    /// [`MultiLayout::select`] match. `write_multi` stamps these bytes over each
+    /// encoded variant record, because a variant layout's discriminator position is
+    /// usually a filler that the encoder zero-fills.
+    pub fn encode_discriminator(&self, tag: &str, enc: Encoding) -> Vec<u8> {
+        let width = self.discriminator.1;
+        let mut out = vec![b' '; width];
+        let src = tag.as_bytes();
+        let n = src.len().min(width);
+        out[..n].copy_from_slice(&src[..n]);
+        match enc {
+            Encoding::Ascii => out,
+            Encoding::Ebcdic => ebcdic::encode_slice(&out),
+        }
+    }
+
     /// Pick the variant for `record` by reading its discriminator bytes. Returns
     /// the variant index and its [`Layout`]. EBCDIC bytes are transcoded to ASCII
     /// before matching; the value is trimmed and compared case-sensitively against
@@ -210,6 +235,28 @@ mod tests {
         assert_eq!(out[1].1, Value::Int(42));
         let (ti, _) = ml.select(b"T000003", Encoding::Ascii).unwrap();
         assert_eq!(ti, 2);
+    }
+
+    #[test]
+    fn encode_discriminator_round_trips_through_select() {
+        let ml = MultiLayout::parse(SPEC).unwrap();
+        // The tag stamps left-justified, space-padded to the discriminator width…
+        assert_eq!(ml.encode_discriminator("H", Encoding::Ascii), b"H");
+        // …and a record stamped with it selects the same variant back.
+        let mut rec = vec![b' '; 16];
+        rec[0..1].copy_from_slice(&ml.encode_discriminator("D", Encoding::Ascii));
+        let (i, _) = ml.select(&rec, Encoding::Ascii).unwrap();
+        assert_eq!(i, 1);
+        // EBCDIC discriminators transcode (CP037 'D') and still select.
+        let disc = ml.encode_discriminator("D", Encoding::Ebcdic);
+        assert_eq!(disc, vec![ebcdic::to_ebcdic(b'D')]);
+        let mut erec = vec![ebcdic::to_ebcdic(b' '); 16];
+        erec[0..1].copy_from_slice(&disc);
+        let (ei, _) = ml.select(&erec, Encoding::Ebcdic).unwrap();
+        assert_eq!(ei, 1);
+        // `variant` looks up a layout by tag.
+        assert!(ml.variant("T").is_some());
+        assert!(ml.variant("Z").is_none());
     }
 
     #[test]

@@ -1,0 +1,68 @@
+# name: test/sql/write_multi.test
+# description: write_multi — write a single-column UNION relation back out to a
+#              heterogeneous multi-record-type flat file (the inverse of
+#              read_multi). The elegant round-trip: read_multi PRODUCES the UNION
+#              input, write_multi writes it, read_multi reads it back, and the
+#              tags + detail fields match the original. Calls are fully qualified
+#              (the worker catalog is read-only; no search_path).
+# group: [sql]
+
+require-env VGI_TEST_WORKER
+
+statement ok
+ATTACH 'fixed' AS fixed (TYPE vgi, LOCATION '${VGI_TEST_WORKER}');
+
+# Round-trip: read data/multi.dat into a UNION column and write it straight back
+# out to data/_multi_out.dat. The same multi-record spec drives both directions;
+# each variant leads with a 1-byte filler covering the discriminator byte, which
+# write_multi stamps with the record-type tag. 4 records, byte-identical body.
+query II
+SELECT rows_written, bytes_written FROM fixed.main.write_multi(
+    (FROM fixed.main.read_multi('data/multi.dat',
+        '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}],"D":[{"type":"filler","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5}],"T":[{"type":"filler","width":1},{"name":"cnt","type":"int","digits":6}]}}')),
+    'data/_multi_out.dat',
+    '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}],"D":[{"type":"filler","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5}],"T":[{"type":"filler","width":1},{"name":"cnt","type":"int","digits":6}]}}');
+----
+4	64
+
+# Identity: the rewritten file's record types match the original file order.
+query T
+SELECT union_tag(record) FROM fixed.main.read_multi('data/_multi_out.dat',
+    '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}],"D":[{"type":"filler","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5}],"T":[{"type":"filler","width":1},{"name":"cnt","type":"int","digits":6}]}}');
+----
+H
+D
+D
+T
+
+# Identity: the detail (D) variant's fields survive the round-trip.
+query TI
+SELECT union_extract(record, 'D').sku, union_extract(record, 'D').qty
+FROM fixed.main.read_multi('data/_multi_out.dat',
+    '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}],"D":[{"type":"filler","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5}],"T":[{"type":"filler","width":1},{"name":"cnt","type":"int","digits":6}]}}')
+WHERE union_tag(record) = 'D'
+ORDER BY 2;
+----
+GADGET	7
+WIDGET	42
+
+# Identity: the header (H) and trailer (T) variants round-trip from their own
+# STRUCTs (each extracts NULL where the other variant is active).
+query TI
+SELECT union_extract(record, 'H').co, union_extract(record, 'T').cnt
+FROM fixed.main.read_multi('data/_multi_out.dat',
+    '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}],"D":[{"type":"filler","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5}],"T":[{"type":"filler","width":1},{"name":"cnt","type":"int","digits":6}]}}')
+WHERE union_tag(record) IN ('H', 'T')
+ORDER BY union_tag(record);
+----
+ACME CORP	NULL
+NULL	2
+
+# A non-UNION input relation is rejected (write_multi requires a single UNION
+# column, the shape read_multi emits).
+statement error
+SELECT * FROM fixed.main.write_multi(
+    (SELECT 'x' AS a, 1 AS b),
+    'data/_multi_bad.dat',
+    '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}]}}');
+----

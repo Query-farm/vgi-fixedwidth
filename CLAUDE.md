@@ -54,6 +54,29 @@ needed.
 - `fixed.main.write_fixed((FROM rel), path, spec [, format =>, encoding =>, framing =>])`
   — write a relation to a fixed-width file (table-buffering sink); returns
   `(rows_written, bytes_written)`.
+- `fixed.main.write_multi((FROM rel), path, spec [, encoding =>, framing =>, compression =>])`
+  — the **inverse of `read_multi`**: write a relation whose **single column is a
+  `UNION`** (the exact shape `read_multi` emits) back out to a heterogeneous
+  multi-record-type file. Table-buffering sink in
+  `crates/fixedformat-worker/src/buffering/write_multi.rs` (mirrors `write_fixed`);
+  returns `(rows_written, bytes_written)`. The `spec` is the **same multi-record
+  JSON** as `read_multi` (`MultiLayout::parse`). `on_bind` validates the input is a
+  single `UNION` column whose variant names all match the spec's tags. For each
+  buffered row: `value_in::union_at(col, row)` reads the per-row `type_id`, maps it
+  to the active variant's tag (the union child field NAME) and reads that child
+  `StructArray` row as `(tag, Vec<(name, Value)>)`; the variant `Layout` is found
+  via `MultiLayout::variant(tag)`; `encode_record` encodes the fields; then the
+  **discriminator bytes are stamped** over `record[off .. off+width]` with
+  `MultiLayout::encode_discriminator(tag, enc)` (tag left-justified, space-padded /
+  truncated to the discriminator width, transcoded to the output encoding) —
+  because a variant layout's discriminator position is usually a filler that
+  `encode_record` zero-fills. Records are then framed (`record_writer::assemble`),
+  optionally compressed (`options::write_compression`), and written local/`s3://`
+  (reusing `write_fixed`'s write code). The discriminator must sit at a **fixed
+  offset before** any `OCCURS … DEPENDING ON` table (same constraint as read);
+  `fixed` framing only aligns when every variant is padded to a common length. No
+  COPY-TO-multi counterpart yet; secret-backed cloud writes follow `write_fixed`'s
+  two-phase-bind path.
 - `fixed.main.describe_fixed(spec [, format =>])` — introspect a layout spec
   **without reading data** (table function in
   `crates/fixedformat-worker/src/table/describe_fixed.rs`; fixed output schema).
