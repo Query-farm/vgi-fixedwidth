@@ -14,7 +14,7 @@ repository = "https://github.com/Query-farm/vgi-fixedformat"
 # VGI Rust SDK (worker side). Published on crates.io. 0.9.5 carries the
 # table-buffering two-phase secret-bind fix that write_fixed needs for cloud writes.
 # Keep arrow/vgi-rpc in lockstep with vgi's pins so a single arrow/vgi-rpc resolves.
-vgi = "0.9.5"
+vgi = "0.10.0"
 vgi-rpc = { version = "0.7.0", default-features = false, features = ["macros", "http"] }
 arrow = { version = "59", default-features = false, features = ["ipc"] }
 arrow-array = "59"
