@@ -77,3 +77,19 @@ date	DATE
 statement error
 SELECT (unpack_fixed('2024XX31', '[{"name":"d","type":"date","width":8,"format":"%Y%m%d"}]')).d;
 ----
+
+# Date fields decode through the file-scan path too (read_fixed over a file of
+# YYYYMMDD records), not just the scalar path — and the column is a real DATE.
+query T
+SELECT d FROM fixed.main.read_fixed('data/dates.dat',
+    '[{"name":"d","type":"date","width":8,"format":"%Y%m%d"}]') ORDER BY d;
+----
+2023-12-25
+2024-01-31
+2025-07-04
+
+query T
+SELECT DISTINCT typeof(d) FROM fixed.main.read_fixed('data/dates.dat',
+    '[{"name":"d","type":"date","width":8,"format":"%Y%m%d"}]');
+----
+DATE

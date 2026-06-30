@@ -66,3 +66,42 @@ SELECT * FROM fixed.main.write_multi(
     'data/_multi_bad.dat',
     '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}]}}');
 ----
+
+# Round-trip with `fixed` framing: read a fixed-length multi file, write it back
+# out with fixed framing, read it back — the record types survive.
+statement ok
+SELECT * FROM fixed.main.write_multi(
+    (FROM fixed.main.read_multi('data/multi_fixed.dat',
+      '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}],"D":[{"type":"filler","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5},{"type":"filler","width":5}],"T":[{"type":"filler","width":1},{"name":"cnt","type":"int","digits":6},{"type":"filler","width":14}]}}',
+      framing => 'fixed')),
+    'data/_mf_out.dat',
+    '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}],"D":[{"type":"filler","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5},{"type":"filler","width":5}],"T":[{"type":"filler","width":1},{"name":"cnt","type":"int","digits":6},{"type":"filler","width":14}]}}',
+    framing => 'fixed');
+
+query T
+SELECT union_tag(record) FROM fixed.main.read_multi('data/_mf_out.dat',
+    '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}],"D":[{"type":"filler","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5},{"type":"filler","width":5}],"T":[{"type":"filler","width":1},{"name":"cnt","type":"int","digits":6},{"type":"filler","width":14}]}}',
+    framing => 'fixed');
+----
+H
+D
+D
+T
+
+# Round-trip through a COMPRESSED destination: write_multi to a .gz (auto from the
+# extension), read_multi auto-decompresses it back. Tags survive.
+statement ok
+SELECT * FROM fixed.main.write_multi(
+    (FROM fixed.main.read_multi('data/multi.dat',
+      '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}],"D":[{"type":"filler","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5}],"T":[{"type":"filler","width":1},{"name":"cnt","type":"int","digits":6}]}}')),
+    'data/_multi_out.dat.gz',
+    '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}],"D":[{"type":"filler","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5}],"T":[{"type":"filler","width":1},{"name":"cnt","type":"int","digits":6}]}}');
+
+query T
+SELECT union_tag(record) FROM fixed.main.read_multi('data/_multi_out.dat.gz',
+    '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}],"D":[{"type":"filler","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5}],"T":[{"type":"filler","width":1},{"name":"cnt","type":"int","digits":6}]}}');
+----
+H
+D
+D
+T

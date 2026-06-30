@@ -74,3 +74,30 @@ ORDER BY 2;
 D	GADGET
 D	MYSTERY
 D	WIDGET
+
+# `fixed` framing for multi-record: every record type padded to a common 21-byte
+# length (no delimiters), so read_multi chunks on the longest variant's length.
+# Record types come back in file order.
+query T
+SELECT union_tag(record)
+FROM fixed.main.read_multi('data/multi_fixed.dat',
+    '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}],"D":[{"type":"filler","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5},{"type":"filler","width":5}],"T":[{"type":"filler","width":1},{"name":"cnt","type":"int","digits":6},{"type":"filler","width":14}]}}',
+    framing => 'fixed');
+----
+H
+D
+D
+T
+
+# The detail fields decode correctly through the fixed-framing path (trailing
+# filler stripped).
+query TI
+SELECT union_extract(record, 'D').sku AS sku, union_extract(record, 'D').qty AS qty
+FROM fixed.main.read_multi('data/multi_fixed.dat',
+    '{"discriminator":{"offset":0,"width":1},"records":{"H":[{"type":"filler","width":1},{"name":"co","type":"str","width":20}],"D":[{"type":"filler","width":1},{"name":"sku","type":"str","width":10},{"name":"qty","type":"int","digits":5},{"type":"filler","width":5}],"T":[{"type":"filler","width":1},{"name":"cnt","type":"int","digits":6},{"type":"filler","width":14}]}}',
+    framing => 'fixed')
+WHERE union_tag(record) = 'D'
+ORDER BY qty;
+----
+GADGET	7
+WIDGET	42

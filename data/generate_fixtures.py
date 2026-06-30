@@ -120,4 +120,20 @@ write("multi.dat", multi)
 # exercise both the hard error (no default) and the `default` fallback.
 write("multi_bad.dat", multi + b"Z" + b"MYSTERY".ljust(10)[:10] + b"00099" + b"\n")
 
+# Fixed-length multi-record file: EVERY record type is padded to a common 21-byte
+# length (1-byte tag + 20-byte payload), so it can be read with `framing => 'fixed'`
+# (no delimiters). Used by the fixed-framing multi round-trip test.
+#   H = tag + co X(20)
+#   D = tag + sku X(10) + qty 9(5) + 5 pad
+#   T = tag + cnt 9(6) + 14 pad
+mf = b""
+mf += b"H" + b"ACME CORP".ljust(20)[:20]
+mf += b"D" + b"WIDGET".ljust(10)[:10] + b"00042" + b" " * 5
+mf += b"D" + b"GADGET".ljust(10)[:10] + b"00007" + b" " * 5
+mf += b"T" + b"000002" + b" " * 14
+write("multi_fixed.dat", mf)
+
+# Newline file of YYYYMMDD date fields, for the read_fixed date-type test.
+write("dates.dat", b"20240131\n20231225\n20250704\n")
+
 print("done")
