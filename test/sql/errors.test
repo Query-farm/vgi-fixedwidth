@@ -39,11 +39,6 @@ SELECT pack_fixed({'name': 'JOHN', 'qnty': 42}, 'name:A10 qty:9(5)');
 ----
 no value supplied for field
 
-# Writing to a compressed destination is refused (no raw bytes under a .gz name).
-statement error
-SELECT * FROM write_fixed((SELECT 'x' AS a), '/tmp/ff_out.dat.gz', 'a:A1');
-----
-does not apply
 
 # Missing file.
 statement error

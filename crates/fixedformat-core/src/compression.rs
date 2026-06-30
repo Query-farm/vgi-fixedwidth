@@ -43,6 +43,20 @@ impl Compression {
         }
     }
 
+    /// Infer the codec from a destination path's extension (`.gz`/`.gzip` →
+    /// gzip, `.zst`/`.zstd` → zstd, else none). Used on the **write** side, where
+    /// there are no magic bytes yet, to auto-select a codec from the file name.
+    pub fn from_path(path: &str) -> Compression {
+        let lower = path.to_ascii_lowercase();
+        if lower.ends_with(".gz") || lower.ends_with(".gzip") {
+            Compression::Gzip
+        } else if lower.ends_with(".zst") || lower.ends_with(".zstd") {
+            Compression::Zstd
+        } else {
+            Compression::None
+        }
+    }
+
     /// Detect the codec from a buffer's leading magic bytes. Unknown / too-short
     /// input is treated as [`Compression::None`] (raw).
     pub fn detect(data: &[u8]) -> Compression {
@@ -79,6 +93,25 @@ pub fn decompress(data: Vec<u8>, compression: Compression) -> Result<Vec<u8>> {
             dec.read_to_end(&mut out)
                 .map_err(|e| Error(format!("zstd decode: {e}")))?;
             Ok(out)
+        }
+    }
+}
+
+/// Compress `data` according to `compression`, the inverse of [`decompress`].
+/// [`Compression::None`] returns the input unchanged. Used by the write path
+/// (`write_fixed` / `COPY … TO`) to emit a `.gz` / `.zst` file.
+pub fn compress(data: &[u8], compression: Compression) -> Result<Vec<u8>> {
+    use std::io::Write;
+    match compression {
+        Compression::None => Ok(data.to_vec()),
+        Compression::Gzip => {
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(data)
+                .map_err(|e| Error(format!("gzip encode: {e}")))?;
+            e.finish().map_err(|e| Error(format!("gzip encode: {e}")))
+        }
+        Compression::Zstd => {
+            zstd::stream::encode_all(data, 0).map_err(|e| Error(format!("zstd encode: {e}")))
         }
     }
 }
@@ -136,6 +169,21 @@ mod tests {
     fn none_is_identity() {
         let raw = b"untouched".to_vec();
         assert_eq!(decompress(raw.clone(), Compression::None).unwrap(), raw);
+    }
+
+    #[test]
+    fn compress_roundtrips_through_decompress() {
+        let plain = b"NAME      00042\nJANE      00007\n";
+        for codec in [Compression::None, Compression::Gzip, Compression::Zstd] {
+            let comp = compress(plain, codec).unwrap();
+            assert_eq!(decompress(comp, codec).unwrap(), plain);
+        }
+        // The codec a write picks for a path round-trips via magic-byte detect.
+        assert_eq!(Compression::from_path("out.dat.gz"), Compression::Gzip);
+        assert_eq!(Compression::from_path("OUT.ZST"), Compression::Zstd);
+        assert_eq!(Compression::from_path("plain.dat"), Compression::None);
+        let gz = compress(plain, Compression::from_path("x.gz")).unwrap();
+        assert_eq!(Compression::detect(&gz), Compression::Gzip);
     }
 
     #[test]

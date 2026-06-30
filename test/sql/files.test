@@ -229,6 +229,35 @@ AAA
 BBB
 CCC
 
+# Write-side compression: a '.gz' destination is gzip-compressed (auto from the
+# extension); read_fixed auto-detects + decompresses it on the way back.
+statement ok
+SELECT * FROM fixed.main.write_fixed((FROM t), 'data/_out.dat.gz', 'name:A10 qty:9(5)');
+
+# The written file really is gzip (magic bytes 1f 8b), not raw text.
+query T
+SELECT substr(hex(content), 1, 4) FROM read_blob('data/_out.dat.gz');
+----
+1F8B
+
+query I
+SELECT qty FROM fixed.main.read_fixed('data/_out.dat.gz', 'name:A10 qty:9(5)') ORDER BY qty;
+----
+5
+999
+
+# Forced zstd via the option, written to a non-suggestive name, read back forced.
+statement ok
+SELECT * FROM fixed.main.write_fixed((FROM t), 'data/_out.zdat', 'name:A10 qty:9(5)',
+    compression => 'zstd');
+
+query I
+SELECT qty FROM fixed.main.read_fixed('data/_out.zdat', 'name:A10 qty:9(5)',
+    compression => 'zstd') ORDER BY qty;
+----
+5
+999
+
 # ---------------------------------------------------------------------------
 # Projection pushdown (read_fixed advertises projection_pushdown = true, so the
 # SDK narrows the producer's output_schema to just the requested columns). The

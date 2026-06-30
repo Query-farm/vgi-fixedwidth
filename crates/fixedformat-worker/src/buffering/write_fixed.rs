@@ -131,6 +131,13 @@ impl TableBufferingFunction for WriteFixed {
                 "How to delimit records in the output: 'newline' (the default), 'fixed', 'rdw', \
                  or 'rdw_blocked'.",
             ),
+            ArgSpec::const_arg(
+                "compression",
+                -1,
+                "varchar",
+                "Compress the output: 'auto' (the default — gzip if the path ends '.gz', zstd if \
+                 '.zst', else raw), 'none', 'gzip', or 'zstd'. The whole file is compressed.",
+            ),
         ]
         .into_iter()
         .chain(options::cloud_arg_specs())
@@ -189,7 +196,7 @@ impl TableBufferingFunction for WriteFixed {
             .arguments
             .const_str(1)
             .ok_or_else(|| ve("write_fixed: path is required"))?;
-        cloud::reject_compressed_dest(&path)?;
+        let codec = options::write_compression(&params.arguments, &path)?;
 
         // Drain all buffered batches, encoding each row to a framed record.
         let mut records: Vec<Vec<u8>> = Vec::new();
@@ -208,7 +215,10 @@ impl TableBufferingFunction for WriteFixed {
             }
         }
 
-        let body = assemble(&records, framing);
+        // Compress the assembled body whole (gzip/zstd) when the path/option asks
+        // for it; `bytes_written` reflects the actual on-disk (compressed) size.
+        let body = fixedformat_core::compression::compress(&assemble(&records, framing), codec)
+            .map_err(ve)?;
         let rows_written = records.len() as i64;
         let bytes_written = body.len() as i64;
         match cloud::classify(&path)? {

@@ -142,6 +142,13 @@ impl CopyToFunction for CopyToFixed {
                  or 'rdw_blocked'.",
             ),
             ArgSpec::column(
+                "compression",
+                -1,
+                "varchar",
+                "Compress the output: 'auto' (the default — gzip if the path ends '.gz', zstd if \
+                 '.zst', else raw), 'none', 'gzip', or 'zstd'.",
+            ),
+            ArgSpec::column(
                 "endpoint",
                 -1,
                 "varchar",
@@ -196,9 +203,11 @@ impl CopyToFunction for CopyToFixed {
             encode_batch(&batch, &layout, enc, &mut records)?;
         }
 
-        // An empty COPY still writes an (empty) destination file.
-        cloud::reject_compressed_dest(ctx.path)?;
-        let body = assemble(&records, framing);
+        // An empty COPY still writes an (empty) destination file. Compress the
+        // assembled body whole when the path/option requests gzip/zstd.
+        let codec = options::write_compression(ctx.options, ctx.path)?;
+        let body = fixedformat_core::compression::compress(&assemble(&records, framing), codec)
+            .map_err(ve)?;
         let rows_written = records.len() as i64;
         match cloud::classify(ctx.path)? {
             Location::Local(p) => {

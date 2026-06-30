@@ -111,6 +111,17 @@ pub fn compression(args: &Arguments) -> Result<Option<Compression>> {
     }
 }
 
+/// Resolve the **write-side** output compression: an explicit `compression =>`
+/// (`none`/`gzip`/`zstd`) wins; otherwise (`auto`/absent) the codec is inferred
+/// from the destination `path`'s extension (`.gz` → gzip, `.zst` → zstd, else
+/// none). The body is compressed whole before the terminal write.
+pub fn write_compression(args: &Arguments, path: &str) -> Result<Compression> {
+    Ok(match compression(args)? {
+        Some(c) => c,
+        None => Compression::from_path(path),
+    })
+}
+
 /// Resolve the read resource limits (decompression-bomb / pathological-record
 /// backstops) from named arguments, falling back to [`Limits::default`].
 /// `max_decompressed_bytes =>` raises (or lowers) the cap on total decompressed

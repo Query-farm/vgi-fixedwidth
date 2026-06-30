@@ -81,25 +81,6 @@ pub fn classify(path: &str) -> Result<Location> {
     Ok(Location::Local(path.to_string()))
 }
 
-/// Reject a write destination whose extension implies a compression codec the
-/// writer does NOT apply — otherwise `write_fixed`/`COPY … TO` would emit raw
-/// bytes into a misleadingly-named `.gz`/`.zst` file. (Write-side compression is
-/// not yet supported.)
-pub fn reject_compressed_dest(path: &str) -> Result<()> {
-    let lower = path.to_ascii_lowercase();
-    for ext in [".gz", ".gzip", ".zst", ".zstd"] {
-        if lower.ends_with(ext) {
-            return Err(ve(format!(
-                "destination '{path}' implies '{}' compression, which the writer does not apply \
-                 (it would write RAW bytes under a compressed name). Write to an uncompressed \
-                 path, or compress the file afterwards.",
-                ext.trim_start_matches('.')
-            )));
-        }
-    }
-    Ok(())
-}
-
 /// Build an `s3://bucket/key` URL string with the key's URL-delimiter chars
 /// percent-encoded (see [`S3_KEY_ESCAPE`]) so `Url::parse` preserves the whole
 /// key — including a `?` glob wildcard.

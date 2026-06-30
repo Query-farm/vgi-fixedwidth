@@ -3,7 +3,7 @@
 **/*.rs.bk
 .DS_Store
 # write_fixed test output artifacts
-data/_*.dat
+data/_*
 
 # vgi-lint review cache
 .vgi-review-cache.json
